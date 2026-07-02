@@ -10,14 +10,16 @@ from __future__ import annotations
 from app.config.settings import Settings
 
 
-def test_settings_has_no_baked_in_glific_or_frappe_url(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_settings_has_no_baked_in_endpoint_defaults(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.delenv("GLIFIC_API_URL", raising=False)
     monkeypatch.delenv("FRAPPE_API_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
 
     settings = Settings(_env_file=None)
 
     assert settings.glific_api_url == ""
     assert settings.frappe_api_url == ""
+    assert settings.redis_url == ""
 
 
 def test_settings_reads_endpoints_from_env(monkeypatch) -> None:  # type: ignore[no-untyped-def]

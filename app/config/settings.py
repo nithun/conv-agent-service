@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # --- External endpoints (no environment-specific defaults) ---
     glific_api_url: str = ""
     frappe_api_url: str = ""
-    redis_url: str = "redis://localhost:6379"
+    redis_url: str = ""
 
     # --- LLM / observability (populated once secrets exist, WBS 0.3/0.4) ---
     openrouter_api_key: str = ""
