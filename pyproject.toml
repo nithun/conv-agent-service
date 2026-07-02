@@ -1,0 +1,50 @@
+[project]
+name = "tap-agent-service"
+version = "0.1.0"
+description = "TAP LMS conversational agent - FastAPI service between Glific and TAP LMS/Frappe"
+requires-python = ">=3.11,<3.13"
+readme = "README.md"
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.32,<1.0",
+    "pydantic>=2.9,<3.0",
+    "pydantic-settings>=2.6,<3.0",
+    "httpx>=0.27,<1.0",
+    "redis>=5.1,<6.0",
+    "arq>=0.26,<1.0",
+    "guardrails-ai>=0.6,<1.0",
+    "openai>=1.54,<2.0",
+    "langfuse>=2.53,<3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.24,<1.0",
+    "ruff>=0.7,<1.0",
+    "mypy>=1.13,<2.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+exclude = ["^tests/"]
+
+[[tool.mypy.overrides]]
+module = ["guardrails.*", "arq.*", "langfuse.*"]
+ignore_missing_imports = true
