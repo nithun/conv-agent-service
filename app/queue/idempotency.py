@@ -43,3 +43,16 @@ async def mark_reply_sent_if_not_already(redis: Redis, contact_id: str, entry_id
         _send_guard_key(contact_id, entry_id), "1", nx=True, ex=SEND_GUARD_TTL_SECONDS
     )
     return was_set is not None
+
+
+async def is_reply_already_sent(redis: Redis, contact_id: str, entry_id: str) -> bool:
+    """Read-only check (no mutation) — used by the consumer loop BEFORE
+    calling `process_turn_fn`, to detect "this entry_id already completed
+    successfully on a prior attempt" (worker crashed between finishing the
+    send and acking the Stream entry) without itself marking anything. The
+    mutating mark happens only AFTER `process_turn_fn` succeeds
+    (`mark_reply_sent_if_not_already`), so a genuinely FAILED attempt never
+    marks the guard and is free to retry.
+    """
+    value = await redis.get(_send_guard_key(contact_id, entry_id))
+    return value is not None

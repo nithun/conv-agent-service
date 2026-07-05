@@ -18,6 +18,7 @@ CORE_MODULES = [
     CORE_ROOT / "guardrails_checks.py",
     CORE_ROOT / "identity.py",
     CORE_ROOT / "prompts.py",
+    CORE_ROOT / "turn_logic.py",
 ]
 
 FORBIDDEN_MODULE_PREFIXES = (

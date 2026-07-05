@@ -19,11 +19,14 @@ from redis.asyncio import Redis
 
 from app.config.settings import Settings, get_settings
 from app.delivery.glific_client import GlificClient
+from app.ingress.glific_payload import GlificWebhookPayload
 from app.ingress.glific_webhook import router as webhook_router
 from app.ingress.health import router as health_router
 from app.ingress.media import router as media_router
 from app.llm.router import build_default_model_router
 from app.tools.lms_client import TapLmsClient
+from app.worker.distress_gate import handle_distress
+from app.worker.session_store import RedisSessionStore
 
 
 def _build_lms_client(settings: Settings) -> TapLmsClient:
@@ -54,10 +57,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.glific_client = GlificClient(
         settings.glific_api_url, settings.glific_phone, settings.glific_password
     )
-    # Set by app/worker/distress_gate.py's wiring once Task 8 lands; ingress
-    # tolerates it being unset (logs a warning, does not crash the fast-ack
-    # path) per app/ingress/glific_webhook.py.
-    app.state.distress_handler = None
+    app.state.session_store = RedisSessionStore(app.state.redis, settings)
+
+    # Top-level distress gate (BR-003/Invariant 4/AC-9): ingress calls this
+    # directly, before enqueue, so it is reachable e2e from the real
+    # webhook route for every early state (identity_confirmation, greeting,
+    # mode_choice), not just unit-tested in isolation (L-008).
+    async def _distress_handler(payload: GlificWebhookPayload) -> None:
+        await handle_distress(
+            payload,
+            session_store=app.state.session_store,
+            glific_client=app.state.glific_client,
+        )
+
+    app.state.distress_handler = _distress_handler
 
     yield
 
