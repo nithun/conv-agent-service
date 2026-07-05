@@ -7,6 +7,10 @@ govern the planning loop (PRD/CR/BR -> tasks -> build -> review -> test ->
 retrospective) on top of these conventions — read both, this file for
 "how", the parent for "why" and "what's approved to build."
 
+Architecture design: `../docs/designs/AD-002-tap-agent-service-conversational-pipeline.md`
+(components, data flow, external contracts, the port from tap-buddy per
+ADR-010/ADR-011/CR-004 — read before touching `app/`).
+
 ## Stack
 
 - Python 3.11 (pinned in `pyproject.toml` as `>=3.11,<3.13`).

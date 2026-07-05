@@ -15,6 +15,7 @@ dependencies = [
     "guardrails-ai>=0.6,<1.0",
     "openai>=1.54,<2.0",
     "langfuse>=2.53,<3.0",
+    "pyyaml>=6.0,<7.0",
 ]
 
 [dependency-groups]
@@ -23,6 +24,8 @@ dev = [
     "pytest-asyncio>=0.24,<1.0",
     "ruff>=0.7,<1.0",
     "mypy>=1.13,<2.0",
+    "fakeredis>=2.26,<3.0",
+    "types-pyyaml>=6.0,<7.0",
 ]
 
 [tool.uv]
