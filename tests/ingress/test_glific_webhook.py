@@ -11,6 +11,7 @@ import time
 
 import pytest
 
+from app.queue.escalation_queue import ESCALATION_STREAM_KEY
 from app.queue.settings import stream_key
 
 
@@ -105,7 +106,10 @@ async def test_ordering_rapid_messages_same_contact_via_real_ingress(client) -> 
 async def test_distress_message_does_not_enqueue_for_normal_processing(client) -> None:
     """Top-level distress gate (BR-003/AD-002 data flow): a distress-hit
     message is intercepted BEFORE enqueue — the worker's state machine
-    never sees it as a normal turn.
+    never sees it as a normal turn. It is instead enqueued onto the
+    dedicated escalation stream (code-review fix, 2026-07-05, Finding 1) —
+    the Glific-facing side effects run later, in the worker, never inline
+    on this ack path.
     """
     payload = {
         "contact_id": "5",
@@ -120,6 +124,10 @@ async def test_distress_message_does_not_enqueue_for_normal_processing(client) -
 
     entries = await client._transport.app.state.redis.xrange(stream_key("5"))
     assert entries == []
+
+    escalation_entries = await client._transport.app.state.redis.xrange(ESCALATION_STREAM_KEY)
+    assert len(escalation_entries) == 1
+    assert escalation_entries[0][1]["contact_id"] == "5"
 
 
 @pytest.mark.asyncio

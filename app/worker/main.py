@@ -7,6 +7,12 @@ the arq worker process context," distinct from tap-buddy's single FastAPI
 process (L-009: the new stack's networking/session context differs and
 must be verified, not assumed).
 
+Also drains the escalation stream (`app/queue/escalation_queue.py`,
+`app/worker/escalation_consumer.py` — code-review fix, 2026-07-05, Finding
+1): the ingress distress gate now only enqueues; this loop is what actually
+performs the Glific send + Ticket-open for a distress hit, off the pre-ack
+path.
+
 This is NOT built on `arq.Worker`'s own job-queue model — this service's
 ordering guarantee (R-3) comes from per-contact Redis Streams + consumer
 groups (`app/queue/consumer.py`), which is a different mechanism than
@@ -39,6 +45,7 @@ from app.llm.router import build_default_model_router
 from app.queue.settings import STREAM_KEY_PREFIX
 from app.tools.lms_client import TapLmsClient
 from app.worker.consumer_loop import drain_contact_stream_once
+from app.worker.escalation_consumer import drain_escalation_stream_once
 from app.worker.session_store import RedisSessionStore
 from app.worker.turn_processor import TurnProcessingResult, process_turn
 
@@ -46,6 +53,7 @@ logger = logging.getLogger("app.worker.main")
 
 POLL_INTERVAL_SECONDS = 1.0
 CONSUMER_NAME = "tap_agent_worker"
+ESCALATION_CONSUMER_NAME = "tap_agent_escalation_worker"
 
 
 async def _discover_active_contact_ids(redis: Redis) -> list[str]:
@@ -119,6 +127,23 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
                     logger.exception(
                         "unexpected failure draining contact_id=%s; continuing loop", contact_id
                     )
+
+            try:
+                await drain_escalation_stream_once(
+                    redis,
+                    ESCALATION_CONSUMER_NAME,
+                    session_store=session_store,
+                    glific_client=glific_client,
+                    block_ms=100,
+                )
+            except Exception:
+                # Same backstop reasoning as the per-contact loop above —
+                # process_one_escalation_entry already handles per-entry
+                # failures; this is the final safety net so a discovery-loop
+                # level exception here never stops turn processing for
+                # every contact.
+                logger.exception("unexpected failure draining escalation stream; continuing loop")
+
             iteration += 1
             if max_iterations is None or iteration < max_iterations:
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)

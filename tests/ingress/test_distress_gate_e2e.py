@@ -4,6 +4,14 @@ early state (identity_confirmation, greeting, mode_choice) — per L-008, an
 e2e test through the actual `/webhook/glific` route, not a direct call to
 `handle_distress`. Mirrors tap-buddy's `test_distress_at_*` suite, redone
 against this new entrypoint.
+
+Code-review fix (2026-07-05, Finding 1): the ingress route now only
+enqueues onto the escalation stream (`app/queue/escalation_queue.py`) and
+acks immediately (L-002) — the real Glific send/Ticket-open happens in the
+worker (`app/worker/escalation_consumer.py`). Each test below calls
+`drain_escalation()` after posting, standing in for the standalone worker
+process draining that stream, so the actual send_text/create_ticket calls
+are still asserted end-to-end, just one step later than before.
 """
 
 from __future__ import annotations
@@ -16,13 +24,13 @@ from app.worker.session_store import session_key
 
 @pytest.mark.asyncio
 async def test_distress_at_identity_confirmation_no_candidates_escalates(
-    client_with_distress_handler,
+    client_with_escalation_worker,
 ) -> None:
     """A brand-new contact (no session at all yet) sending a distressing
     message must still escalate — the escalation record's identity may be
     null, that's acceptable (safety over attribution).
     """
-    client, fake_glific = client_with_distress_handler
+    client, fake_glific = client_with_escalation_worker
     payload = {
         "contact_id": "10",
         "phone": "919999999999",
@@ -33,6 +41,10 @@ async def test_distress_at_identity_confirmation_no_candidates_escalates(
 
     assert response.status_code == 200
     assert response.json()["escalated"] is True
+
+    drained = await client_with_escalation_worker.drain_escalation()
+    assert drained is True
+
     assert len(fake_glific.sent_texts) == 1
     assert fake_glific.sent_texts[0][0] == "10"
     assert len(fake_glific.tickets) == 1
@@ -45,13 +57,13 @@ async def test_distress_at_identity_confirmation_no_candidates_escalates(
 
 @pytest.mark.asyncio
 async def test_distress_at_greeting_escalates_and_does_not_store_as_readiness(
-    client_with_distress_handler,
+    client_with_escalation_worker,
 ) -> None:
     """A session already in GREETING (post-identity-resolution) that sends
     a distress message must escalate — the text must NOT be captured as
     the normal readiness_response.
     """
-    client, fake_glific = client_with_distress_handler
+    client, fake_glific = client_with_escalation_worker
     session_store = client._transport.app.state.session_store
 
     from app.core.state_machine import StudentIdentity, new_session
@@ -71,6 +83,9 @@ async def test_distress_at_greeting_escalates_and_does_not_store_as_readiness(
     assert response.status_code == 200
     assert response.json()["escalated"] is True
 
+    drained = await client_with_escalation_worker.drain_escalation()
+    assert drained is True
+
     loaded = await session_store.load_session("11")
     assert loaded is not None
     assert loaded.state == SessionState.ESCALATED
@@ -78,8 +93,8 @@ async def test_distress_at_greeting_escalates_and_does_not_store_as_readiness(
 
 
 @pytest.mark.asyncio
-async def test_distress_at_mode_choice_escalates(client_with_distress_handler) -> None:
-    client, fake_glific = client_with_distress_handler
+async def test_distress_at_mode_choice_escalates(client_with_escalation_worker) -> None:
+    client, fake_glific = client_with_escalation_worker
     session_store = client._transport.app.state.session_store
 
     from app.core.state_machine import StudentIdentity, new_session, transition
@@ -100,6 +115,9 @@ async def test_distress_at_mode_choice_escalates(client_with_distress_handler) -
     assert response.status_code == 200
     assert response.json()["escalated"] is True
 
+    drained = await client_with_escalation_worker.drain_escalation()
+    assert drained is True
+
     loaded = await session_store.load_session("12")
     assert loaded is not None
     assert loaded.state == SessionState.ESCALATED
@@ -108,12 +126,12 @@ async def test_distress_at_mode_choice_escalates(client_with_distress_handler) -
 
 @pytest.mark.asyncio
 async def test_distress_reply_always_sent_even_if_ticket_creation_fails(
-    client_with_distress_handler,
+    client_with_escalation_worker,
 ) -> None:
     """A child-safety close reply must go out even if the Ticket call
     itself fails — the reply already tells the child a human is coming.
     """
-    client, fake_glific = client_with_distress_handler
+    client, fake_glific = client_with_escalation_worker
 
     async def _failing_create_ticket(*args, **kwargs):
         raise RuntimeError("simulated Glific Ticketing outage")
@@ -129,4 +147,8 @@ async def test_distress_reply_always_sent_even_if_ticket_creation_fails(
     response = await client.post("/webhook/glific", json=payload)
 
     assert response.status_code == 200
+
+    drained = await client_with_escalation_worker.drain_escalation()
+    assert drained is True
+
     assert len(fake_glific.sent_texts) == 1  # close reply still sent

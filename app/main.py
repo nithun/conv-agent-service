@@ -19,13 +19,11 @@ from redis.asyncio import Redis
 
 from app.config.settings import Settings, get_settings
 from app.delivery.glific_client import GlificClient
-from app.ingress.glific_payload import GlificWebhookPayload
 from app.ingress.glific_webhook import router as webhook_router
 from app.ingress.health import router as health_router
 from app.ingress.media import router as media_router
 from app.llm.router import build_default_model_router
 from app.tools.lms_client import TapLmsClient
-from app.worker.distress_gate import handle_distress
 from app.worker.session_store import RedisSessionStore
 
 
@@ -73,18 +71,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.session_store = RedisSessionStore(app.state.redis, settings)
 
-    # Top-level distress gate (BR-003/Invariant 4/AC-9): ingress calls this
-    # directly, before enqueue, so it is reachable e2e from the real
-    # webhook route for every early state (identity_confirmation, greeting,
-    # mode_choice), not just unit-tested in isolation (L-008).
-    async def _distress_handler(payload: GlificWebhookPayload) -> None:
-        await handle_distress(
-            payload,
-            session_store=app.state.session_store,
-            glific_client=app.state.glific_client,
-        )
-
-    app.state.distress_handler = _distress_handler
+    # Top-level distress gate (BR-003/Invariant 4/AC-9): the webhook route
+    # (`app/ingress/glific_webhook.py`) enqueues onto the dedicated
+    # escalation stream (`app/queue/escalation_queue.py`) directly, before
+    # the turn enqueue, so it is reachable e2e from the real webhook route
+    # for every early state (identity_confirmation, greeting, mode_choice),
+    # not just unit-tested in isolation (L-008). The actual Glific-facing
+    # side effects (`handle_distress`) run only in the worker process
+    # (`app/worker/escalation_consumer.py`), never inline here — code-review
+    # fix, 2026-07-05, Finding 1 (L-002 regression: those are real network
+    # calls up to GlificClient's 10s httpx timeout, which must never block
+    # the fast-ack response).
 
     yield
 

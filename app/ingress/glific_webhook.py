@@ -8,9 +8,18 @@ deterministic (non-LLM) distress keyword check as the TOP-LEVEL safety gate
 BEFORE any state handling (BR-003/AD-002's data-flow placement — ahead of
 identity resolution, greeting/readiness, and mode_choice, none of which run
 in this fast-ack path at all; the real state machine runs in the worker), a
-single Redis XADD enqueue (Task 5), and — only on a distress hit — a
-Glific send + Ticket open before acking. All other turn processing
-(identity resolution, LLM calls, tool calls, guardrails) happens in
+single Redis XADD enqueue (Task 5), and — on a distress hit — a SECOND
+cheap XADD onto the dedicated escalation stream (`app/queue/escalation_queue.py`).
+
+Code-review fix (2026-07-05, Finding 1 — L-002 regression): this handler
+used to `await distress_handler(...)` inline, which performed REAL Glific
+network calls (`GlificClient.send_text`, `create_ticket` via
+`open_ticket_for_escalation`) before acking — `GlificClient`'s httpx client
+defaults to a 10s timeout, so a slow/hung Glific call could hold the webhook
+open past Glific's 4s flow-webhook budget. The Glific-facing side effects
+now run only in the worker (`app/worker/escalation_consumer.py`), off this
+ack path, exactly like every other reply. All other turn processing
+(identity resolution, LLM calls, tool calls, guardrails) also happens in
 `app/worker/`, never here.
 """
 
@@ -24,6 +33,7 @@ from pydantic import ValidationError
 from app.core.guardrails_checks import detect_distress
 from app.ingress.glific_payload import GlificWebhookPayload, parse_glific_webhook_payload
 from app.queue.enqueue import enqueue_turn, is_duplicate_message
+from app.queue.escalation_queue import enqueue_escalation
 
 logger = logging.getLogger("app.ingress.glific_webhook")
 
@@ -77,31 +87,29 @@ async def glific_webhook(request: Request) -> dict[str, object]:
     # path) — detect_distress's own fallback (combined English+Hindi
     # coverage for None) handles that, matching tap-buddy's documented
     # behavior rather than hardcoding "English" here.
+    #
+    # Finding 1 fix (2026-07-05): the actual Glific send + Ticket-open
+    # (real network calls, up to GlificClient's 10s httpx timeout) must
+    # never run inline here (L-002) — this handler only does a second cheap
+    # XADD onto the dedicated escalation stream and acks immediately. The
+    # worker (`app/worker/escalation_consumer.py`) drains that stream
+    # asynchronously and performs the real Glific-facing side effects,
+    # exactly like every other turn reply already goes through the worker.
     if payload.text and detect_distress(payload.text, None):
-        distress_handler = getattr(request.app.state, "distress_handler", None)
-        if distress_handler is not None:
-            try:
-                await distress_handler(payload)
-            except Exception:
-                # Live-integration-pass finding (2026-07-05): a downstream
-                # Glific outage/auth failure during the distress-close-reply
-                # send must NEVER turn into a 500 on the fast-ack path
-                # (L-002) — the webhook's own contract is "ack fast," not
-                # "ack fast unless the escalation delivery has a problem."
-                # The distress detection itself already happened
-                # (deterministic, no network call); a failure to actually
-                # SEND the close reply / open the Ticket is a delivery
-                # concern, logged here for follow-up, not a reason to fail
-                # the webhook response the Glific flow is waiting on.
-                logger.exception(
-                    "distress_handler failed for contact_id=%s; webhook still acks "
-                    "(L-002) — escalation delivery may need manual follow-up",
-                    payload.contact_id,
-                )
-        else:
-            logger.warning(
-                "distress detected but no distress_handler wired on app.state; "
-                "message NOT enqueued for normal processing, escalation NOT sent"
+        try:
+            await enqueue_escalation(redis, _flatten_payload_for_stream(payload))
+        except Exception:
+            # Mirrors the prior resilience guarantee
+            # (test_distress_handler_exception_does_not_500_the_webhook_response):
+            # a Redis outage on the escalation-enqueue round-trip must never
+            # 500 the fast-ack response the Glific flow is waiting on. The
+            # deterministic distress detection itself already happened; a
+            # failure to enqueue is logged for manual follow-up, not a
+            # reason to fail this webhook call.
+            logger.exception(
+                "failed to enqueue escalation for contact_id=%s; webhook still acks "
+                "(L-002) — escalation delivery may need manual follow-up",
+                payload.contact_id,
             )
         return {"status": "ok", "escalated": True}
 
