@@ -47,6 +47,33 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"
 
+    # --- Glific auth (session-based, see docs/glific-dev-endpoint.md) ---
+    glific_phone: str = ""
+    glific_password: str = ""
+    # Optional: 'TAP Buddy Turn'-equivalent relay flow id — when set, the
+    # worker re-arms this flow per turn (ported from tap-buddy's
+    # GLIFIC_TURN_FLOW_ID / _maybe_rearm_turn_flow). Cutover (which flow
+    # this points at in production) is explicitly out of this CR's scope
+    # (F-019) — this setting only carries the env-var contract forward.
+    glific_turn_flow_id: str = ""
+
+    # --- TAP LMS / Frappe auth ---
+    tap_lms_api_key: str = ""
+    # Required for get_next_content (allow_guest=False on the live server,
+    # ported fact from tap-buddy/CLAUDE.md, live-verified 2026-07-03).
+    tap_lms_token: str = ""
+
+    # --- Redis session store (R-2) ---
+    # 30-min inactivity expiry, ported from tap-buddy's
+    # state_machine.SESSION_TTL_SECONDS — AD-002's Interfaces & schemas
+    # section records the field list; this is the TTL decision itself.
+    session_ttl_seconds: int = 30 * 60
+
+    # --- Media (ASR/TTS voice notes) ---
+    public_base_url: str = "http://localhost:8000"
+    media_dir: str = "./data/media"
+    media_ttl_seconds: int = 24 * 60 * 60
+
 
 def get_settings() -> Settings:
     """Return a fresh Settings instance (env re-read each call).

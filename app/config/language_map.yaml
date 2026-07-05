@@ -1,0 +1,92 @@
+# Language map: LMS tap_language value -> {stt_locale, tts_voice, supported}
+#
+# Built from Google Cloud Speech-to-Text (locale support) and
+# Text-to-Speech (WaveNet/Standard voice availability) documentation, since
+# a live smoke test only exercises 2 languages (see tap-buddy/CLAUDE.md's
+# "ASR/TTS live smoke test" section for which two and their actual verified
+# results). Every entry below is either a genuinely supported STT+TTS pair
+# or explicitly `supported: false` with the fallback used instead.
+#
+# Fallback: English (en-IN) is used whenever tap_language is missing,
+# unrecognized, or `supported: false` — chosen over Hindi as the fallback
+# because Google's STT/TTS quality and voice-catalog breadth for en-IN is
+# the deepest of the set, and it's Q1's original trial-build default
+# (PRD-003 REVISION 2 keeps English as *a* supported language even though
+# all Indic languages are now in scope). Hindi (hi-IN) is the SECONDARY
+# fallback, used by language-resolution code if a caller explicitly wants a
+# more locally-appropriate fallback than English for a Hindi-majority
+# cohort — see tap-buddy/CLAUDE.md.
+
+English:
+  stt_locale: en-IN
+  tts_voice: en-IN-Standard-A
+  tts_language_code: en-IN
+  supported: true
+
+Hindi:
+  stt_locale: hi-IN
+  tts_voice: hi-IN-Standard-A
+  tts_language_code: hi-IN
+  supported: true
+
+Bengali:
+  stt_locale: bn-IN
+  tts_voice: bn-IN-Standard-A
+  tts_language_code: bn-IN
+  supported: true
+
+Tamil:
+  stt_locale: ta-IN
+  tts_voice: ta-IN-Standard-A
+  tts_language_code: ta-IN
+  supported: true
+
+Telugu:
+  stt_locale: te-IN
+  tts_voice: te-IN-Standard-A
+  tts_language_code: te-IN
+  supported: true
+
+Marathi:
+  stt_locale: mr-IN
+  tts_voice: mr-IN-Standard-A
+  tts_language_code: mr-IN
+  supported: true
+
+Gujarati:
+  stt_locale: gu-IN
+  tts_voice: gu-IN-Standard-A
+  tts_language_code: gu-IN
+  supported: true
+
+Kannada:
+  stt_locale: kn-IN
+  tts_voice: kn-IN-Standard-A
+  tts_language_code: kn-IN
+  supported: true
+
+Malayalam:
+  stt_locale: ml-IN
+  tts_voice: ml-IN-Standard-A
+  tts_language_code: ml-IN
+  supported: true
+
+Punjabi:
+  # Google STT supports pa-Guru-IN (Gurmukhi script locale); Google TTS has
+  # no dedicated Punjabi voice as of this build — falls back to Hindi TTS,
+  # STT still transcribes Punjabi speech via the pa-Guru-IN locale.
+  stt_locale: pa-Guru-IN
+  tts_voice: hi-IN-Standard-A
+  tts_language_code: hi-IN
+  supported: false
+  fallback_reason: "No dedicated Google TTS voice for Punjabi as of this build; STT locale exists but TTS falls back to Hindi."
+
+Urdu:
+  stt_locale: ur-IN
+  tts_voice: ur-IN-Standard-A
+  tts_language_code: ur-IN
+  supported: true
+
+_fallback:
+  primary: English
+  secondary: Hindi

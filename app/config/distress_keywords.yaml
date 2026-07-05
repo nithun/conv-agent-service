@@ -1,0 +1,285 @@
+# Distress/unsafe-signal keyword patterns, per LMS tap_language value.
+#
+# Regex patterns (case-insensitive), one list per language. Categories per
+# source doc rule C: abuse, self-harm, fear, sickness, safety. Extensible —
+# add a language key + pattern list; unmapped languages fall back to BOTH
+# the "English" and "Hindi" lists combined (see distress_keywords.py's
+# get_distress_patterns — never silently degrades to a single list for an
+# unmapped language; a warning is logged instead so the gap is visible).
+#
+# Every language marked supported: true in language_map.yaml has a
+# dedicated entry here (Task/CR #TB-3): English, Hindi, Bengali, Tamil,
+# Telugu, Marathi, Gujarati, Kannada, Malayalam, Urdu. Punjabi is
+# `supported: false` in language_map.yaml (STT-only, TTS falls back to
+# Hindi) and intentionally has no dedicated entry — it relies on the
+# English+Hindi fallback pair like any other unmapped language.
+#
+# Native-script entries include common Latin transliteration alongside the
+# native script per PRD-003 Task 5's requirement that the detector isn't
+# hardcoded English-only. Each language keeps the same 5 categories (abuse,
+# self-harm, fear, sickness, safety) as the English/Hindi lists.
+
+English:
+  # abuse
+  - "\\bhit(ting)?\\s+me\\b"
+  - "\\bhurt(ing)?\\s+me\\b"
+  - "\\bbeat(ing|s)?\\s+me\\b"
+  - "\\babus(e|ing|ed)\\b"
+  # self-harm
+  - "\\bkill\\s+myself\\b"
+  - "\\bhurt\\s+myself\\b"
+  - "\\bwant\\s+to\\s+die\\b"
+  - "\\bsuicid"
+  # fear
+  - "\\bafraid\\b"
+  - "\\bscared\\b"
+  - "\\bterrified\\b"
+  - "\\bthreaten"
+  # sickness
+  - "\\bsick\\b"
+  - "\\bvery\\s+ill\\b"
+  - "\\bcan'?t\\s+breathe\\b"
+  - "\\bfever\\b.*\\bbad\\b"
+  # safety
+  - "\\bnot\\s+safe\\b"
+  - "\\bdon'?t\\s+feel\\s+safe\\b"
+  - "\\bdanger\\b"
+  - "\\balone\\s+at\\s+home\\b.*\\bscared\\b"
+
+Hindi:
+  # abuse (Devanagari + transliteration)
+  - "मुझे मार"
+  - "मुझे पीट"
+  - "mujhe maar"
+  - "mujhe peet"
+  # self-harm
+  - "खुद को नुकसान"
+  - "मरना चाहता"
+  - "मरना चाहती"
+  - "khud ko nuksan"
+  - "marna chahta"
+  - "marna chahti"
+  # fear
+  - "डर लग रहा"
+  - "डरा हुआ"
+  - "dar lag raha"
+  - "dara hua"
+  # sickness
+  - "बहुत बीमार"
+  - "सांस नहीं"
+  - "bahut bimar"
+  - "saans nahi aa"
+  # safety
+  - "सुरक्षित नहीं"
+  - "khatra"
+  - "khatre mein"
+  - "surakshit nahi"
+
+Bengali:
+  # abuse (Bengali script + transliteration)
+  - "আমাকে মার"
+  - "আমাকে পিটি"
+  - "amake mar"
+  - "amake pitay"
+  # self-harm
+  - "নিজেকে ক্ষতি"
+  - "মরে যেতে চাই"
+  - "nijeke khoti"
+  - "more jete chai"
+  # fear
+  - "ভয় লাগছে"
+  - "ভয়ংকর"
+  - "bhoy lagche"
+  - "voyongkor"
+  # sickness
+  - "খুব অসুস্থ"
+  - "শ্বাস নিতে পারছি না"
+  - "khub oshustho"
+  - "shash nite parchi na"
+  # safety
+  - "নিরাপদ না"
+  - "বিপদ"
+  - "biporjoy"
+  - "nirapod na"
+
+Tamil:
+  # abuse (Tamil script + transliteration)
+  - "என்னை அடி"
+  - "என்னை அடிக்கிற"
+  - "ennai adi"
+  - "ennai adikkiran"
+  # self-harm
+  - "என்னை காயப்படுத்த"
+  - "செத்துடனும்"
+  - "ennai kaayappaduthu"
+  - "sethuduvom"
+  # fear
+  - "பயமா இருக்கு"
+  - "பயங்கரமா"
+  - "bayama irukku"
+  - "bayangaramaa"
+  # sickness
+  - "ரொம்ப சுகமில்லை"
+  - "மூச்சு விட முடியல"
+  - "romba sugamillai"
+  - "moochu vida mudiyala"
+  # safety
+  - "பாதுகாப்பு இல்ல"
+  - "ஆபத்து"
+  - "paadhukaappu illa"
+
+Telugu:
+  # abuse (Telugu script + transliteration)
+  - "నన్ను కొడుతున్నారు"
+  - "నన్ను కొట్టారు"
+  - "nannu koduthunnaru"
+  - "nannu kottaru"
+  # self-harm
+  - "నన్ను నేను గాయపరచుకోవాలి"
+  - "చనిపోవాలని అనిపిస్తుంది"
+  - "chanipovalani anipistundi"
+  - "nannu nenu gaayaparachukovaali"
+  # fear
+  - "భయంగా ఉంది"
+  - "భయానకంగా"
+  - "bhayanga undi"
+  - "bhayanakanga"
+  # sickness
+  - "చాలా అనారోగ్యంగా"
+  - "శ్వాస తీసుకోలేకపోతున్నాను"
+  - "chala anaarogyanga"
+  - "swasa theesukoleka potunnanu"
+  # safety
+  - "సురక్షితం కాదు"
+  - "ప్రమాదం"
+  - "surakshitham kaadu"
+
+Marathi:
+  # abuse (Devanagari + transliteration)
+  - "मला मारत"
+  - "मला मारतात"
+  - "mala marat"
+  - "mala maartat"
+  # self-harm
+  - "स्वतःला इजा"
+  - "मरायचं आहे"
+  - "swataala ijaa"
+  - "maraycha aahe"
+  # fear
+  - "भीती वाटते"
+  - "घाबरलो"
+  - "bheeti vatate"
+  - "ghabaralo"
+  # sickness
+  - "खूप आजारी"
+  - "श्वास घेता येत नाही"
+  - "khoop aajaari"
+  - "shwas gheta yet nahi"
+  # safety
+  - "सुरक्षित नाही"
+  - "dhoka"
+  - "surakshit nahi"
+
+Gujarati:
+  # abuse (Gujarati script + transliteration)
+  - "મને મારે છે"
+  - "મને માર માર્યો"
+  - "mane mare chhe"
+  - "mane maar maaryo"
+  # self-harm
+  - "પોતાને નુકસાન"
+  - "મરી જવાનું મન થાય"
+  - "potane nuksan"
+  - "mari javanu man thay"
+  # fear
+  - "ડર લાગે છે"
+  - "ડરામણું"
+  - "dar lage chhe"
+  - "daraamanu"
+  # sickness
+  - "ખૂબ બીમાર"
+  - "શ્વાસ લઈ શકતો નથી"
+  - "khoob bimaar"
+  - "shwaas lai shakato nathi"
+  # safety
+  - "સુરક્ષિત નથી"
+  - "khatro"
+  - "surakshit nathi"
+
+Kannada:
+  # abuse (Kannada script + transliteration)
+  - "ನನ್ನನ್ನು ಹೊಡೆಯುತ್ತಾರೆ"
+  - "ನನ್ನನ್ನು ಹೊಡೆದರು"
+  - "nannannu hodeyuttare"
+  - "nannannu hodedaru"
+  # self-harm
+  - "ನನ್ನನ್ನು ನಾನೇ ನೋಯಿಸಿಕೊಳ್ಳಬೇಕು"
+  - "ಸಾಯಬೇಕು ಅನ್ನಿಸುತ್ತಿದೆ"
+  - "saayabeku annisuttide"
+  - "nannannu naane noyisikollabeku"
+  # fear
+  - "ಭಯ ಆಗ್ತಿದೆ"
+  - "ಭಯಾನಕ"
+  - "bhaya aagtide"
+  - "bhayaanaka"
+  # sickness
+  - "ತುಂಬಾ ಅನಾರೋಗ್ಯ"
+  - "ಉಸಿರಾಡಲು ಆಗ್ತಿಲ್ಲ"
+  - "tumba anaarogya"
+  - "usiraadalu aagtilla"
+  # safety
+  - "ಸುರಕ್ಷಿತ ಅಲ್ಲ"
+  - "ಅಪಾಯ"
+  - "surakshita alla"
+
+Malayalam:
+  # abuse (Malayalam script + transliteration)
+  - "എന്നെ അടിക്കുന്നു"
+  - "എന്നെ അടിച്ചു"
+  - "enne adikkunnu"
+  - "enne adichu"
+  # self-harm
+  - "എന്നെത്തന്നെ വേദനിപ്പിക്കണം"
+  - "മരിക്കണം എന്ന് തോന്നുന്നു"
+  - "marikkanam ennu thonnunnu"
+  - "ennethanne vedanippikkanam"
+  # fear
+  - "പേടിയാകുന്നു"
+  - "ഭയാനകം"
+  - "pediyaakunnu"
+  - "bhayaanakam"
+  # sickness
+  - "വളരെ അസുഖം"
+  - "ശ്വാസം എടുക്കാൻ പറ്റുന്നില്ല"
+  - "valare asukham"
+  - "shwaasam edukkaan pattunnilla"
+  # safety
+  - "സുരക്ഷിതമല്ല"
+  - "ആപത്ത്"
+  - "surakshithamalla"
+
+Urdu:
+  # abuse (Urdu script + transliteration)
+  - "مجھے مار"
+  - "مجھے پیٹ"
+  - "mujhe maar"
+  - "mujhe peet"
+  # self-harm
+  - "خود کو نقصان"
+  - "مرنا چاہتا"
+  - "khud ko nuksan"
+  - "marna chahta"
+  # fear
+  - "ڈر لگ رہا"
+  - "خوفناک"
+  - "dar lag raha"
+  - "khaufnaak"
+  # sickness
+  - "بہت بیمار"
+  - "سانس نہیں آ رہی"
+  - "bahut bimar"
+  - "saans nahi aa rahi"
+  # safety
+  - "محفوظ نہیں"
+  - "khatra"
+  - "mehfooz nahi"

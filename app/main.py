@@ -1,18 +1,78 @@
 """FastAPI application entrypoint.
 
-Scaffold only (WBS 0.1) - registers the health route. Webhook ingress
-(WBS 1.1+) mounts additional routers here in later tasks.
+Wires `app.state` with the Redis client, LMS client, Glific client, and
+ModelRouter — all constructed once at startup (lifespan), injected into
+request handlers via `request.app.state`. Mirrors tap-buddy's `main.py`
+assembly pattern, re-platformed onto this service's target infra (Redis
+Streams/arq instead of an asyncio background task, ModelRouter instead of a
+direct Vertex client) per CR-004.
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+import redis.asyncio as redis_asyncio
 from fastapi import FastAPI
+from redis.asyncio import Redis
 
-from app.config.settings import get_settings
+from app.config.settings import Settings, get_settings
+from app.delivery.glific_client import GlificClient
+from app.ingress.glific_webhook import router as webhook_router
 from app.ingress.health import router as health_router
+from app.ingress.media import router as media_router
+from app.llm.router import build_default_model_router
+from app.tools.lms_client import TapLmsClient
 
-settings = get_settings()
 
-app = FastAPI(title=settings.app_name)
+def _build_lms_client(settings: Settings) -> TapLmsClient:
+    return TapLmsClient(
+        settings.frappe_api_url,
+        settings.tap_lms_api_key,
+        frappe_token=settings.tap_lms_token or None,
+    )
 
-app.include_router(health_router)
+
+def _build_redis_client(settings: Settings) -> Redis:
+    # redis-py's `from_url` has no type stubs (untyped helper) — the
+    # explicit Redis return annotation here is the actual contract callers
+    # rely on, not from_url's own (missing) signature.
+    client: Redis = redis_asyncio.from_url(  # type: ignore[no-untyped-call]
+        settings.redis_url or "redis://localhost:6379"
+    )
+    return client
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    app.state.settings = settings
+    app.state.redis = _build_redis_client(settings)
+    app.state.lms_client = _build_lms_client(settings)
+    app.state.model_router = build_default_model_router(settings.openrouter_api_key)
+    app.state.glific_client = GlificClient(
+        settings.glific_api_url, settings.glific_phone, settings.glific_password
+    )
+    # Set by app/worker/distress_gate.py's wiring once Task 8 lands; ingress
+    # tolerates it being unset (logs a warning, does not crash the fast-ack
+    # path) per app/ingress/glific_webhook.py.
+    app.state.distress_handler = None
+
+    yield
+
+    await app.state.lms_client.aclose()
+    await app.state.glific_client.aclose()
+    await app.state.redis.aclose()
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    app.include_router(health_router)
+    app.include_router(webhook_router)
+    app.include_router(media_router)
+    return app
+
+
+app = create_app()

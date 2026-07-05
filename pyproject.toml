@@ -16,6 +16,8 @@ dependencies = [
     "openai>=1.54,<2.0",
     "langfuse>=2.53,<3.0",
     "pyyaml>=6.0,<7.0",
+    "google-cloud-speech>=2.27,<3.0",
+    "google-cloud-texttospeech>=2.16,<3.0",
 ]
 
 [dependency-groups]
@@ -26,6 +28,7 @@ dev = [
     "mypy>=1.13,<2.0",
     "fakeredis>=2.26,<3.0",
     "types-pyyaml>=6.0,<7.0",
+    "respx>=0.21,<1.0",
 ]
 
 [tool.uv]
@@ -49,5 +52,5 @@ strict = true
 exclude = ["^tests/"]
 
 [[tool.mypy.overrides]]
-module = ["guardrails.*", "arq.*", "langfuse.*"]
+module = ["guardrails.*", "arq.*", "langfuse.*", "google.cloud.*"]
 ignore_missing_imports = true
