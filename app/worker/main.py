@@ -1,0 +1,133 @@
+"""Standalone worker process entrypoint (CR-004 Phase 7 gap-close,
+2026-07-05): a long-running async process hosting the consumer-loop
+machinery (`app/worker/consumer_loop.py`) against real Redis/TAP LMS/
+Glific/ModelRouter clients — the "arq worker process" CR-004's own text
+refers to when it says live-integration evidence must be captured "from
+the arq worker process context," distinct from tap-buddy's single FastAPI
+process (L-009: the new stack's networking/session context differs and
+must be verified, not assumed).
+
+This is NOT built on `arq.Worker`'s own job-queue model — this service's
+ordering guarantee (R-3) comes from per-contact Redis Streams + consumer
+groups (`app/queue/consumer.py`), which is a different mechanism than
+arq's job queue. Running literally as `arq.Worker` jobs would mean two
+competing queue mechanisms; this process is a plain asyncio loop that
+discovers active contact streams and drains each one via the SAME
+`process_one_entry`/`drain_contact_stream_once` primitives already tested
+in `tests/worker/test_consumer_loop.py` — the retry/backoff/DLQ semantics
+are identical either way.
+
+Contact-stream discovery here uses a `KEYS` scan, acceptable at this
+trial's scale (per docs/architecture.md's stated ~500k-student ceiling,
+not exercised at anywhere near that volume yet) — a production-scale
+version would maintain an explicit active-contacts registry set instead of
+scanning all keys; that is a future optimization, not required for this
+port to be correct.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from redis.asyncio import Redis
+
+from app.config.settings import Settings, get_settings
+from app.delivery.glific_client import GlificClient
+from app.ingress.glific_payload import GlificWebhookPayload
+from app.llm.router import build_default_model_router
+from app.queue.settings import STREAM_KEY_PREFIX
+from app.tools.lms_client import TapLmsClient
+from app.worker.consumer_loop import drain_contact_stream_once
+from app.worker.session_store import RedisSessionStore
+from app.worker.turn_processor import TurnProcessingResult, process_turn
+
+logger = logging.getLogger("app.worker.main")
+
+POLL_INTERVAL_SECONDS = 1.0
+CONSUMER_NAME = "tap_agent_worker"
+
+
+async def _discover_active_contact_ids(redis: Redis) -> list[str]:
+    keys: list[str] = await redis.keys(f"{STREAM_KEY_PREFIX}*")
+    prefix_len = len(STREAM_KEY_PREFIX)
+    return [key[prefix_len:] for key in keys]
+
+
+def _build_redis_client(settings: Settings) -> Redis:
+    # Mirrors app/main.py::_build_redis_client exactly (decode_responses=True
+    # is required — see that function's docstring for the live-caught
+    # failure mode this guards against). Duplicated rather than imported
+    # from app.main to avoid this worker process depending on the FastAPI
+    # app module (and its router/lifespan wiring) just for one helper.
+    import redis.asyncio as redis_asyncio
+
+    client: Redis = redis_asyncio.from_url(  # type: ignore[no-untyped-call]
+        settings.redis_url or "redis://localhost:6379", decode_responses=True
+    )
+    return client
+
+
+async def run_worker_loop(*, max_iterations: int | None = None) -> None:
+    """The long-running loop: discover active contact streams, drain one
+    pending entry per contact per pass, sleep, repeat. `max_iterations` is
+    for tests/manual verification runs only (None = run forever, the real
+    deployment shape).
+    """
+    settings = get_settings()
+    redis = _build_redis_client(settings)
+    session_store = RedisSessionStore(redis, settings)
+    lms_client = TapLmsClient(
+        settings.frappe_api_url,
+        settings.tap_lms_api_key,
+        frappe_token=settings.tap_lms_token or None,
+    )
+    glific_client = GlificClient(
+        settings.glific_api_url, settings.glific_phone, settings.glific_password
+    )
+    model_router = build_default_model_router(settings.openrouter_api_key)
+
+    async def process_turn_fn(payload: GlificWebhookPayload) -> TurnProcessingResult:
+        return await process_turn(
+            payload,
+            session_store=session_store,
+            lms_client=lms_client,
+            model_router=model_router,
+            glific_client=glific_client,
+        )
+
+    logger.info("worker loop starting (redis_url=%s)", settings.redis_url)
+    iteration = 0
+    try:
+        while max_iterations is None or iteration < max_iterations:
+            contact_ids = await _discover_active_contact_ids(redis)
+            for contact_id in contact_ids:
+                try:
+                    await drain_contact_stream_once(
+                        redis,
+                        contact_id,
+                        CONSUMER_NAME,
+                        process_turn_fn=process_turn_fn,
+                        block_ms=100,
+                    )
+                except Exception:
+                    # A discovery-loop-level failure for one contact must
+                    # never stop the loop from processing every OTHER
+                    # contact (P-002) — process_one_entry already handles
+                    # per-entry failures with retry/DLQ; this is a final
+                    # backstop for anything that somehow escapes that.
+                    logger.exception(
+                        "unexpected failure draining contact_id=%s; continuing loop", contact_id
+                    )
+            iteration += 1
+            if max_iterations is None or iteration < max_iterations:
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+    finally:
+        await lms_client.aclose()
+        await glific_client.aclose()
+        await redis.aclose()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run_worker_loop())

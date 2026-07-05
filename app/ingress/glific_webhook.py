@@ -80,7 +80,24 @@ async def glific_webhook(request: Request) -> dict[str, object]:
     if payload.text and detect_distress(payload.text, None):
         distress_handler = getattr(request.app.state, "distress_handler", None)
         if distress_handler is not None:
-            await distress_handler(payload)
+            try:
+                await distress_handler(payload)
+            except Exception:
+                # Live-integration-pass finding (2026-07-05): a downstream
+                # Glific outage/auth failure during the distress-close-reply
+                # send must NEVER turn into a 500 on the fast-ack path
+                # (L-002) — the webhook's own contract is "ack fast," not
+                # "ack fast unless the escalation delivery has a problem."
+                # The distress detection itself already happened
+                # (deterministic, no network call); a failure to actually
+                # SEND the close reply / open the Ticket is a delivery
+                # concern, logged here for follow-up, not a reason to fail
+                # the webhook response the Glific flow is waiting on.
+                logger.exception(
+                    "distress_handler failed for contact_id=%s; webhook still acks "
+                    "(L-002) — escalation delivery may need manual follow-up",
+                    payload.contact_id,
+                )
         else:
             logger.warning(
                 "distress detected but no distress_handler wired on app.state; "

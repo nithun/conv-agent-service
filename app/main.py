@@ -41,8 +41,22 @@ def _build_redis_client(settings: Settings) -> Redis:
     # redis-py's `from_url` has no type stubs (untyped helper) — the
     # explicit Redis return annotation here is the actual contract callers
     # rely on, not from_url's own (missing) signature.
+    #
+    # decode_responses=True is REQUIRED (live-integration-pass finding,
+    # 2026-07-05): every queue/session module (app/queue/*, app/worker/
+    # session_store.py) is written against str keys/values throughout
+    # (e.g. RedisSessionStore._deserialize_session's `fields["identity"]`).
+    # Without this flag, redis-py's async client returns bytes by default,
+    # and every str-keyed dict lookup against a real Redis server silently
+    # KeyErrors — every test in this repo used
+    # fakeredis.aioredis.FakeRedis(decode_responses=True), which masked
+    # this until a live Redis instance (this Docker Compose stack) was
+    # actually exercised. Confirmed live: unit/e2e tests were green
+    # throughout; only running against a REAL Redis server surfaced this
+    # (L-008/L-010's exact point — mocked-external tests are not
+    # sufficient evidence).
     client: Redis = redis_asyncio.from_url(  # type: ignore[no-untyped-call]
-        settings.redis_url or "redis://localhost:6379"
+        settings.redis_url or "redis://localhost:6379", decode_responses=True
     )
     return client
 
