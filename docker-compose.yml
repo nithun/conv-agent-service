@@ -1,6 +1,14 @@
-# Local dev: FastAPI service + Redis as sibling services (Docker-first
-# extension, docs/architecture.md Sec5 in the parent workspace). Supersedes
-# bare-metal `uvicorn` + separately provisioned Redis for local dev.
+# Local dev: FastAPI service + standalone worker process + Redis as sibling
+# services (Docker-first extension, docs/architecture.md Sec5 in the parent
+# workspace). Supersedes bare-metal `uvicorn` + separately provisioned Redis
+# for local dev.
+#
+# BOTH `app` and `worker` must be running for the service to function:
+# `app` only fast-acks the Glific webhook and enqueues (L-002); `worker` is
+# what actually processes turns (LLM/Frappe calls, guardrails) AND drains
+# the escalation stream (distress-hit Glific send + Ticket-open, CR-004
+# Phase 7 gap-close). Without `worker`, every turn reply and every distress
+# escalation is silently dropped even though ingress returns 200 OK.
 
 services:
   app:
@@ -19,6 +27,22 @@ services:
     volumes:
       - ./app:/srv/app
       - ./tests:/srv/tests
+
+  worker:
+    build:
+      context: .
+      target: dev
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/srv/app
+      - ./tests:/srv/tests
+    command: ["python", "-m", "app.worker.main"]
 
   redis:
     image: redis:7-alpine

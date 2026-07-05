@@ -6,3 +6,16 @@ FastAPI microservice between Glific (WhatsApp delivery) and TAP LMS/Frappe
 for system design.
 
 Quickstart: `docker compose up --build` then `curl http://localhost:8000/health`.
+
+This brings up **three** containers: `app` (FastAPI ingress, port 8000),
+`worker` (the standalone async worker process, `app/worker/main.py`), and
+`redis`. **Both `app` and `worker` must be running** — `app` only fast-acks
+the Glific webhook and enqueues the turn (L-002: no LLM/Frappe/media work
+inline in the webhook handler); `worker` is what actually processes the
+turn (LLM call, Frappe tool calls, guardrails, the real Glific reply) and
+drains the escalation stream (the Glific send + Ticket-open for a distress
+hit). If `worker` is not running, ingress will still return 200 OK for
+every inbound message, but no turn reply and no distress escalation will
+ever be delivered — this is silent from the webhook's point of view, so
+always confirm `docker compose ps` shows `worker` as `Up` (not just `app`
+and `redis`) when diagnosing "nothing is happening" in local dev.

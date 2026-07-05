@@ -90,10 +90,24 @@ staging/prod artifact) serves both.
 
 ```bash
 cp .env.example .env        # first time only; fill in secrets as they exist
-docker compose up --build   # boots app (port 8000) + Redis (port 6379)
+docker compose up --build   # boots app (8000) + worker + Redis (6379)
 curl http://localhost:8000/health
+docker compose ps           # confirm app, worker, AND redis are all Up
 docker compose down         # tear down when finished
 ```
+
+**`worker` is not optional.** `app` (the FastAPI ingress) only fast-acks the
+Glific webhook and enqueues the turn onto its per-contact Redis Stream
+(L-002) — it never does the LLM call, Frappe tool calls, guardrail pass, or
+the actual Glific reply/escalation send. `app/worker/main.py`
+(`run_worker_loop`) is the standalone async process that drains those
+streams and performs the real side effects, including draining the
+escalation stream (distress-hit Glific send + Ticket-open). If `worker`
+isn't running, `docker compose up` still looks healthy (ingress keeps
+returning 200 OK) but every turn reply and every distress escalation is
+silently dropped — there is no error surfaced anywhere in that path. Run
+`docker compose ps` after `up` and confirm `worker` shows `Up`, not just
+`app`/`redis`.
 
 `GLIFIC_API_URL=http://host.docker.internal:4000` in `.env.example` is a
 **macOS-only Docker networking value** (Glific dev runs on the host, not in
