@@ -33,6 +33,7 @@ from app.core.state_machine import (
 )
 from app.core.turn_logic import ModelRouterLike, run_turn
 from app.ingress.glific_payload import GlificWebhookPayload
+from app.worker.escalation import open_ticket_for_escalation
 from app.worker.session_store import RedisSessionStore
 
 logger = logging.getLogger("app.worker.turn_processor")
@@ -44,6 +45,7 @@ class _GlificSender(Protocol):
     """
 
     async def send_text(self, receiver_id: str, body_text: str) -> object: ...
+    async def create_ticket(self, contact_id: str, topic: str, body_text: str) -> object: ...
 
 
 @dataclass
@@ -160,6 +162,14 @@ async def process_turn(
     await session_store.save_session(outcome.session)
 
     await glific_client.send_text(payload.contact_id, outcome.reply_text)
+
+    if outcome.escalated:
+        # Task 13/Invariant 5: every escalation trigger reachable through
+        # run_turn (distress defense-in-depth, unresolved-doubt cap) opens
+        # a Glific Ticket — the same handoff surface the ingress-level
+        # distress gate uses (app/worker/distress_gate.py), never the
+        # dropped ad-hoc review dashboard.
+        await open_ticket_for_escalation(payload.contact_id, outcome.session, glific_client)
 
     return TurnProcessingResult(
         handled=True,

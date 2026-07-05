@@ -17,15 +17,13 @@ never enqueued for normal turn processing.
 
 from __future__ import annotations
 
-import logging
 from typing import Protocol
 
 from app.core.state_machine import EscalationReason, SessionState, escalate, new_session
 from app.core.turn_logic import DISTRESS_CLOSE_REPLY
 from app.ingress.glific_payload import GlificWebhookPayload
+from app.worker.escalation import open_ticket_for_escalation
 from app.worker.session_store import RedisSessionStore
-
-logger = logging.getLogger("app.worker.distress_gate")
 
 
 class _GlificSender(Protocol):
@@ -41,9 +39,10 @@ async def handle_distress(
 ) -> None:
     """Escalates the session, sends the scripted close reply, and opens a
     Glific Ticket — the top-level, ingress-reachable distress handler.
-    Never raises on a Ticket-creation failure (logs instead) — a
-    child-safety close reply must go out even if the Ticket call itself
-    fails; the reply already tells the child a human is coming.
+    Never raises on a Ticket-creation failure (logs instead, via
+    `open_ticket_for_escalation`) — a child-safety close reply must go out
+    even if the Ticket call itself fails; the reply already tells the
+    child a human is coming.
     """
     session = await session_store.load_session(payload.contact_id)
     if session is None:
@@ -54,21 +53,7 @@ async def handle_distress(
 
     await glific_client.send_text(payload.contact_id, DISTRESS_CLOSE_REPLY)
 
-    try:
-        await glific_client.create_ticket(
-            payload.contact_id,
-            topic="Distress escalation",
-            body_text=(
-                f"Distress keyword detected for contact {payload.contact_id}. "
-                f"Student: {session.identity.child_name or 'unresolved'}. "
-                "Session escalated automatically; review conversation history in Glific."
-            ),
-        )
-    except Exception:
-        logger.exception(
-            "failed to open Glific Ticket for distress escalation; "
-            "close reply was still sent to the child"
-        )
+    await open_ticket_for_escalation(payload.contact_id, session, glific_client)
 
 
 def session_is_terminal(state: SessionState) -> bool:

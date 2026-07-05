@@ -38,6 +38,14 @@ package = false
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["."]
+# `integration` tests need real external systems (live Glific dev instance,
+# real TAP LMS, real OpenRouter/Langfuse) - excluded from the default run,
+# matching tap-buddy's convention; run explicitly for CR-004 Phase 7's
+# live-integration pass (`pytest -m integration`).
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires a live external system, not run by default",
+]
 
 [tool.ruff]
 line-length = 100
