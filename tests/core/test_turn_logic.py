@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+import app.core.turn_logic as turn_logic_module
 from app.core.state_machine import (
     EscalationReason,
     SessionState,
@@ -58,6 +59,27 @@ class FakeModelRouter:
             return None
         system_messages = [m["content"] for m in self.last_messages if m["role"] == "system"]
         return system_messages[0] if system_messages else None
+
+
+@dataclass
+class SequencedFakeModelRouter:
+    """Returns a different scripted result on each successive `generate()`
+    call — needed to exercise the guardrail regenerate-once path, which
+    calls the model a second time with a different (corrective) prompt.
+    """
+
+    scripted_results: list[ModelResponse]
+    calls: list[list[dict[str, str]]] = field(default_factory=list)
+
+    async def generate(
+        self,
+        route_name: str,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> ModelResponse:
+        self.calls.append(messages)
+        index = min(len(self.calls) - 1, len(self.scripted_results) - 1)
+        return self.scripted_results[index]
 
 
 def _session_at(state: SessionState, tap_language: str = "English"):
@@ -435,3 +457,107 @@ async def test_doubt_clearing_third_unresolved_doubt_escalates_without_model_cal
     assert outcome.escalated is True
     assert outcome.session.state == SessionState.ESCALATED
     assert outcome.session.escalation_reason == EscalationReason.UNRESOLVED_DOUBT
+
+
+# ---- guardrail pass wiring (code-review fix, 2026-07-05, Finding 2) --------
+#
+# Confirms `run_turn` is actually wired to `app.guardrails.validators
+# .run_all_validators` (the Guardrails AI validator classes, R-5/P-004),
+# not `app.core.guardrails_checks.run_guardrails` (the bespoke aggregate
+# that was previously the call site here despite having its own,
+# independently-passing tests — L-008: a unit test exercising a function
+# directly does not prove it's reached by the live pipeline).
+
+
+@pytest.mark.asyncio
+async def test_run_turn_calls_run_all_validators_not_the_bespoke_aggregate(monkeypatch) -> None:
+    """Traces the call site itself (L-008): patches
+    `app.core.turn_logic.run_all_validators` and asserts it is actually
+    invoked by `run_turn` for a normal (non-tool, non-escalating) turn.
+    """
+    calls: list[str] = []
+    real_run_all_validators = turn_logic_module.run_all_validators
+
+    def _spy_run_all_validators(reply, *, allowed_content_fields=None):
+        calls.append(reply)
+        return real_run_all_validators(reply, allowed_content_fields=allowed_content_fields)
+
+    monkeypatch.setattr(turn_logic_module, "run_all_validators", _spy_run_all_validators)
+
+    session = _session_at(SessionState.GREETING)
+    router = FakeModelRouter(scripted_result=ModelResponse(text="Hi Aarav!"))
+    lms = MockTapLmsClient()
+
+    await run_turn(session=session, user_input="I'm okay", model_router=router, lms_client=lms)
+
+    assert calls == ["Hi Aarav!"]
+
+
+@pytest.mark.asyncio
+async def test_run_turn_regenerates_once_on_a_guardrail_violation_then_ships_the_rewrite() -> None:
+    """A too-long first draft (fails `run_all_validators`' ReplyLength
+    validator) triggers exactly one corrective regeneration; a compliant
+    rewrite ships as the final reply — proves the real Guardrails AI
+    validator pass drives this behavior end-to-end through run_turn, not
+    just in validators.py's own isolated tests.
+    """
+    session = _session_at(SessionState.GREETING)
+    too_long_reply = "This is one. This is two. This is three. This is four."
+    compliant_rewrite = "Great, thanks for sharing!"
+    router = SequencedFakeModelRouter(
+        scripted_results=[
+            ModelResponse(text=too_long_reply),
+            ModelResponse(text=compliant_rewrite),
+        ]
+    )
+    lms = MockTapLmsClient()
+
+    outcome = await run_turn(
+        session=session, user_input="I'm okay", model_router=router, lms_client=lms
+    )
+
+    assert len(router.calls) == 2  # exactly one regeneration round
+    assert outcome.reply_text == compliant_rewrite
+
+
+@pytest.mark.asyncio
+async def test_run_turn_falls_back_when_the_rewrite_still_violates() -> None:
+    """If the corrective regeneration STILL violates a validator, run_turn
+    ships FALLBACK_REPLY rather than a known-violating reply — never ship a
+    violating reply, even after one regeneration attempt.
+    """
+    from app.core.turn_logic import FALLBACK_REPLY
+
+    session = _session_at(SessionState.GREETING)
+    still_too_long = "One. Two. Three. Four. Five sentences here now."
+    router = SequencedFakeModelRouter(
+        scripted_results=[
+            ModelResponse(text="This is one. This is two. This is three. This is four."),
+            ModelResponse(text=still_too_long),
+        ]
+    )
+    lms = MockTapLmsClient()
+
+    outcome = await run_turn(
+        session=session, user_input="I'm okay", model_router=router, lms_client=lms
+    )
+
+    assert len(router.calls) == 2
+    assert outcome.reply_text == FALLBACK_REPLY
+
+
+@pytest.mark.asyncio
+async def test_run_turn_ships_reply_unmodified_when_it_passes_all_validators() -> None:
+    """A clean, compliant reply is never regenerated — run_all_validators
+    returning zero failures means exactly one model call for the turn.
+    """
+    session = _session_at(SessionState.GREETING)
+    router = SequencedFakeModelRouter(scripted_results=[ModelResponse(text="Hi there!")])
+    lms = MockTapLmsClient()
+
+    outcome = await run_turn(
+        session=session, user_input="I'm okay", model_router=router, lms_client=lms
+    )
+
+    assert len(router.calls) == 1
+    assert outcome.reply_text == "Hi there!"

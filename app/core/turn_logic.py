@@ -8,6 +8,15 @@ key via `ModelRouter` (Task 1) — no call site constructs a provider client
 directly (R-1, AC-1). No FastAPI/Redis/Glific imports (isolation, Task 19
 discipline) — the `ModelRouter` and `lms_client`-like object are passed in
 by the caller (the worker, Task 7/8).
+
+Guardrail pass (code-review fix, 2026-07-05, Finding 2): the actual reply
+validation call goes through `app.guardrails.validators.run_all_validators`
+(the Guardrails AI validator classes, R-5/P-004/ADR-007) — NOT
+`app.core.guardrails_checks.run_guardrails` (the bespoke pure-Python
+aggregate, retained only as a directly-tested pure function, no longer the
+production call site). Both wrap the same 4 deterministic checks; only
+`run_all_validators` was actually reachable from the live turn loop before
+this fix — `run_guardrails` was dead code outside its own tests.
 """
 
 from __future__ import annotations
@@ -21,7 +30,6 @@ from app.core.guardrails_checks import (
     detect_distress,
     detect_doubt_signal,
     detect_off_turn_signal,
-    run_guardrails,
 )
 from app.core.prompts import build_system_prompt
 from app.core.state_machine import (
@@ -34,6 +42,7 @@ from app.core.state_machine import (
     record_reexplanation,
     transition,
 )
+from app.guardrails.validators import run_all_validators
 from app.llm.types import ModelResponse, ToolCall
 from app.tools.definitions import (
     GET_NEXT_CONTENT_TOOL,
@@ -319,12 +328,22 @@ async def run_turn(
     if session.content_reference:
         allowed_fields = {str(v) for v in session.content_reference.values()}
 
-    guardrail_result = run_guardrails(reply_text, allowed_content_fields=allowed_fields)
-    if not guardrail_result.ok:
+    # Code-review fix (2026-07-05, Finding 2): wired to the Guardrails AI
+    # validator pass (`app/guardrails/validators.py::run_all_validators`,
+    # R-5/P-004/ADR-007) — the actual, live call site, not the bespoke
+    # `guardrails_checks.run_guardrails` aggregate this replaced. Both wrap
+    # the SAME 4 deterministic checks (length, single-question,
+    # no-answer-leakage, no-fabricated-content); `run_all_validators`
+    # additionally routes through the real Guardrails AI `Validator`
+    # classes, so a violation is enforced by the library ADR-010 R-5
+    # mandates, not merely by a parallel pure-Python reimplementation that
+    # was never reachable from production.
+    guardrail_failures = run_all_validators(reply_text, allowed_content_fields=allowed_fields)
+    if guardrail_failures:
         # One corrective regeneration ("regenerate once"): tell the model
         # which rule broke, no tools bound. If the rewrite still violates,
         # fall back — never ship a violating reply.
-        failures = ", ".join(f.value for f in guardrail_result.failures)
+        failures = ", ".join(f.value for f in guardrail_failures)
         logger.warning("guardrails rejected reply (%s); regenerating once", failures)
         rewrite = await model_router.generate(
             TAP_BUDDY_TURN_ROUTE,
@@ -342,11 +361,11 @@ async def run_turn(
             [],
         )
         reply_text = rewrite.text.strip() or FALLBACK_REPLY
-        recheck = run_guardrails(reply_text, allowed_content_fields=allowed_fields)
-        if not recheck.ok:
+        recheck_failures = run_all_validators(reply_text, allowed_content_fields=allowed_fields)
+        if recheck_failures:
             logger.warning(
                 "guardrails rejected rewrite (%s); falling back",
-                ", ".join(f.value for f in recheck.failures),
+                ", ".join(f.value for f in recheck_failures),
             )
             reply_text = FALLBACK_REPLY
 
