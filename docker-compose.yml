@@ -53,3 +53,60 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
+
+  # Self-hosted Langfuse (v2, matching pyproject's pinned v2 SDK) so local
+  # dev produces REAL traces without a cloud signup — closes the Langfuse
+  # half of F-020 (parent workspace docs/open-followups.md). Two services,
+  # NOT baked into the app image: Langfuse is a Node/Next.js app with its
+  # own Postgres; it runs beside app/worker on the compose network. The SDK
+  # in app/worker reaches it by service name: LANGFUSE_HOST=http://langfuse:3000
+  # (set in .env). Dashboard published on host port 3001 (3000 is occupied
+  # on this machine); NEXTAUTH_URL must match the browser-facing URL.
+  # Secrets (LANGFUSE_DB_PASSWORD / _NEXTAUTH_SECRET / _SALT) are
+  # compose-interpolated from .env — local-only, gitignored, never defaults.
+  langfuse-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:?set in .env}
+      POSTGRES_DB: langfuse
+    # No host port on purpose: only the langfuse service talks to it, over
+    # the compose-internal network (avoids clashing with Glific's own
+    # host Postgres on 5432).
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  langfuse:
+    image: langfuse/langfuse:2
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    ports:
+      - "3001:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:?set in .env}@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set in .env}
+      SALT: ${LANGFUSE_SALT:?set in .env}
+      TELEMETRY_ENABLED: "false"
+      # Headless init (v2.69+): provisions the org/project/user + API keys
+      # on first boot so no manual UI signup is needed. The project keys are
+      # the SAME values app/worker read as LANGFUSE_PUBLIC_KEY/SECRET_KEY —
+      # one source of truth in .env. Idempotent: ignored once objects exist.
+      LANGFUSE_INIT_ORG_ID: tap-agent
+      LANGFUSE_INIT_ORG_NAME: TAP Agent (local)
+      LANGFUSE_INIT_PROJECT_ID: tap-agent-service-local
+      LANGFUSE_INIT_PROJECT_NAME: tap-agent-service (local dev)
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?set in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?set in .env}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?set in .env}
+      LANGFUSE_INIT_USER_NAME: Nithun
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set in .env}
+
+volumes:
+  langfuse-db-data:

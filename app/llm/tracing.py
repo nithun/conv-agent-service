@@ -176,12 +176,25 @@ class LangfuseTracer:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
     ) -> None:
-        usage_details = None
+        # v2-server field is `usage` — NOT `usage_details`, which the
+        # installed v2.60 SDK *accepts* (its signature has both) but which
+        # only a v3 SERVER ingests; a v2 server silently drops it, leaving
+        # tokens 0/0 in the dashboard. Caught live 2026-07-08 against the
+        # self-hosted v2.95 server (F-020 Langfuse-half verification): a
+        # probe with input_tokens=7/output_tokens=13 arrived with usage
+        # zeroed. The SDK signature check the docstring describes was
+        # necessary but not sufficient — the SERVER's accepted shape is the
+        # real contract (L-009).
+        usage = None
         if input_tokens is not None or output_tokens is not None:
-            usage_details = {"input": input_tokens or 0, "output": output_tokens or 0}
+            usage = {
+                "input": input_tokens or 0,
+                "output": output_tokens or 0,
+                "unit": "TOKENS",
+            }
         try:
             generation.end(  # type: ignore[attr-defined]
-                usage_details=usage_details,
+                usage=usage,
                 metadata={"latency_s": latency_s, "error": error},
                 level="ERROR" if error else "DEFAULT",
             )
