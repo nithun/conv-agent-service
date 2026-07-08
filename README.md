@@ -5,9 +5,9 @@ FastAPI microservice between Glific (WhatsApp delivery) and TAP LMS/Frappe
 `../CLAUDE.md` / `../docs/architecture.md` in the parent planning workspace
 for system design.
 
-Quickstart: `docker compose up --build` then `curl http://localhost:8000/health`.
+Quickstart: `docker compose up --build` then `curl http://localhost:8001/health`.
 
-This brings up **three** containers: `app` (FastAPI ingress, port 8000),
+This brings up **six** containers: `app` (FastAPI ingress, host port 8001 — tap-buddy holds 8000 until the F-019 cutover),
 `worker` (the standalone async worker process, `app/worker/main.py`), and
 `redis`. **Both `app` and `worker` must be running** — `app` only fast-acks
 the Glific webhook and enqueues the turn (L-002: no LLM/Frappe/media work

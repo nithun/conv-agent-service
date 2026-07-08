@@ -95,7 +95,13 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = 30 * 60
 
     # --- Media (ASR/TTS voice notes) ---
-    public_base_url: str = "http://localhost:8000"
+    # No baked default on purpose (same discipline as FRAPPE_API_URL): this
+    # value is the literal URL prefix Glific/WhatsApp fetches voice-note
+    # audio from — a wrong default fails SILENTLY (media links point at the
+    # wrong service; the old ":8000" default pointed at tap-buddy's port
+    # after the 8001 move — 360°-r2 diff-review High finding, 2026-07-08).
+    # Set in .env: local dev = http://localhost:8001.
+    public_base_url: str = ""
     media_dir: str = "./data/media"
     media_ttl_seconds: int = 24 * 60 * 60
 

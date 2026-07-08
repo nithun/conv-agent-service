@@ -80,6 +80,16 @@ async def synthesize_and_store(
     MEDIA_DIR, and returns the publicly reachable /media/{token} URL built
     from PUBLIC_BASE_URL.
     """
+    if not settings.public_base_url:
+        # Fail loudly, not with a silently-relative (unreachable) media URL —
+        # this string is what Glific/WhatsApp will literally fetch. No baked
+        # default exists (360°-r2 diff-review High finding: the old ":8000"
+        # default pointed at tap-buddy's port after the 8001 move).
+        raise ValueError(
+            "PUBLIC_BASE_URL is not set — cannot build a reachable /media/ URL. "
+            "Set it in .env (local dev: http://localhost:8001)."
+        )
+
     locale = resolve_locale(session.identity.tap_language)
     tts_result = speech_client.synthesize(text, locale)
 

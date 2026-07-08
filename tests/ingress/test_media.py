@@ -156,3 +156,25 @@ async def test_media_route_missing_file_returns_404(tmp_path, monkeypatch) -> No
         resp = await client.get("/media/abcdef0123456789abcdef0123456789")
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_synthesize_and_store_fails_loudly_when_public_base_url_unset(tmp_path) -> None:
+    """360°-r2 diff-review High finding 2: public_base_url has no baked
+    default anymore (the old ':8000' default silently pointed media URLs at
+    tap-buddy's port after the 8001 move). Unset must raise, not emit a
+    relative/unreachable URL for Glific to fetch.
+    """
+    settings = Settings(media_dir=str(tmp_path), public_base_url="", _env_file=None)
+    session = new_session("contact-4", "917834811114", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(tap_language="English")
+
+    fake_speech_client = MagicMock()
+    fake_speech_client.synthesize.return_value = TtsResult(
+        audio_bytes=b"fake-mp3", content_type="audio/mpeg"
+    )
+
+    with pytest.raises(ValueError, match="PUBLIC_BASE_URL"):
+        await synthesize_and_store("hello", session, fake_speech_client, settings)
+    # And the guard fires BEFORE any TTS work is done.
+    fake_speech_client.synthesize.assert_not_called()
