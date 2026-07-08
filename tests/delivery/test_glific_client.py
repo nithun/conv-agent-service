@@ -227,6 +227,73 @@ def test_never_calls_send_message_regression_guard():
             )
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_host_header_override_sent_when_configured():
+    """F-021 local-dev-only workaround: when host_header_override is set,
+    every request (auth + GraphQL) sends that value as the Host header,
+    while still connecting to BASE_URL's own address (respx intercepts by
+    URL, matching that the connection target is unchanged).
+    """
+    login_route = respx.post(f"{BASE_URL}/api/v1/session").mock(return_value=_session_response())
+    graphql_route = respx.post(f"{BASE_URL}/api").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "createAndSendMessage": {
+                        "message": {"id": "msg-override", "body": "hi", "type": "TEXT"},
+                        "errors": None,
+                    }
+                }
+            },
+        )
+    )
+
+    overridden_client = GlificClient(
+        BASE_URL,
+        "917834811114",
+        "Secret1234!",
+        host_header_override="localhost:4000",
+    )
+    await overridden_client.send_text("contact-1", "hi")
+    await overridden_client.aclose()
+
+    assert login_route.calls[0].request.headers["host"] == "localhost:4000"
+    assert graphql_route.calls[0].request.headers["host"] == "localhost:4000"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_host_header_absent_by_default(client):
+    """Default construction (no host_header_override, matching every
+    existing caller/env-var-unset behavior) must send the Host header httpx
+    derives from BASE_URL itself, not a fixed override — this must never
+    silently activate anywhere it isn't explicitly opted into.
+    """
+    respx.post(f"{BASE_URL}/api/v1/session").mock(return_value=_session_response())
+    graphql_route = respx.post(f"{BASE_URL}/api").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "createAndSendMessage": {
+                        "message": {"id": "msg-default", "body": "hi", "type": "TEXT"},
+                        "errors": None,
+                    }
+                }
+            },
+        )
+    )
+
+    await client.send_text("contact-1", "hi")
+
+    sent_host = graphql_route.calls[0].request.headers["host"]
+    assert sent_host != "localhost:4000"
+    assert "glific.test.example" in sent_host
+    assert client.host_header_override is None
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_live_glific_smoke():
@@ -243,8 +310,16 @@ async def test_live_glific_smoke():
     test_contact_id = os.environ.get("GLIFIC_TEST_CONTACT_ID")
     if not test_contact_id:
         pytest.skip("set GLIFIC_TEST_CONTACT_ID to run this smoke test")
+    # F-021 local-dev-only workaround: when running this smoke test from
+    # inside a Docker container against the local dev Glific instance, set
+    # GLIFIC_HOST_HEADER_OVERRIDE=localhost:4000 in the test .env to bypass
+    # SubdomainPlug's hostname allowlist gap. Empty/unset elsewhere (e.g.
+    # from the host shell, or against staging) — never defaulted here.
+    host_header_override = os.environ.get("GLIFIC_HOST_HEADER_OVERRIDE") or None
 
-    client = GlificClient(base_url, phone, password)
+    client = GlificClient(
+        base_url, phone, password, host_header_override=host_header_override
+    )
     result = await client.send_text(test_contact_id, "tap-agent-service live smoke test message")
     assert result["id"]
     await client.aclose()

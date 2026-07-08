@@ -16,6 +16,17 @@ defaults for anything environment-specific:
 None of these have environment-specific defaults baked in here on purpose
 (L-001/L-002-adjacent discipline: config drift into code is how a
 macOS-only value like host.docker.internal leaks into staging).
+
+- GLIFIC_HOST_HEADER_OVERRIDE: local-dev-only Docker workaround (F-021, see
+  app/delivery/glific_client.py's module docstring for the full mechanism
+  and root cause). Empty/unset by default — same opt-in discipline as
+  GLIFIC_API_URL itself. When set (only ever in a local .env, never
+  staging/prod), GlificClient sends this value as the outbound `Host`
+  header on every request instead of the one httpx derives from
+  GLIFIC_API_URL, working around the local dev Glific instance's
+  SubdomainPlug hostname allowlist gap (BR-001 in the sibling
+  glific-platform workspace; see ../docs/open-followups.md F-021 in the
+  parent workspace).
 """
 
 from __future__ import annotations
@@ -50,6 +61,11 @@ class Settings(BaseSettings):
     # --- Glific auth (session-based, see docs/glific-dev-endpoint.md) ---
     glific_phone: str = ""
     glific_password: str = ""
+    # Local-dev-only Docker Host-header override (F-021) — empty/unset by
+    # default, must never be given a value here or default to anything;
+    # only ever set via a local .env. See this module's docstring above and
+    # app/delivery/glific_client.py's module docstring for the mechanism.
+    glific_host_header_override: str = ""
     # Optional: 'TAP Buddy Turn'-equivalent relay flow id — when set, the
     # worker re-arms this flow per turn (ported from tap-buddy's
     # GLIFIC_TURN_FLOW_ID / _maybe_rearm_turn_flow). Cutover (which flow

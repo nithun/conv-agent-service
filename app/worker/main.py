@@ -91,7 +91,10 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
         frappe_token=settings.tap_lms_token or None,
     )
     glific_client = GlificClient(
-        settings.glific_api_url, settings.glific_phone, settings.glific_password
+        settings.glific_api_url,
+        settings.glific_phone,
+        settings.glific_password,
+        host_header_override=settings.glific_host_header_override or None,
     )
     model_router = build_default_model_router(settings.openrouter_api_key)
 

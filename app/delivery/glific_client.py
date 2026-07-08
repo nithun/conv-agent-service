@@ -22,6 +22,25 @@ unchanged.
   shape) — the ONLY escalation/handoff surface; `adapters/review.py`
   (tap-buddy's ad-hoc HTML dashboard) does NOT port (ADR-010 Invariant 5,
   Nithun's decision 2026-07-05).
+
+### Local-dev-only Docker `Host`-header workaround (F-021)
+
+The local dev Glific instance's `SubdomainPlug` hardcodes a hostname
+allowlist (`localhost`/`127.0.0.1`) that omits `host.docker.internal` — it
+rejects (403) any request whose `Host` header isn't in that allowlist,
+regardless of source IP or credentials (root-caused by the sibling
+`glific-platform` workspace, `BR-001-docker-host-403-subdomain-plug.md`;
+this workspace's own diagnosis trail is `docs/open-followups.md` F-021 in
+the parent workspace). This client never hardcodes a workaround for that —
+`host_header_override` (wired from the optional `GLIFIC_HOST_HEADER_OVERRIDE`
+env var, empty/unset by default, see `app/config/settings.py`) lets the
+TCP connection still go to wherever `base_url`/`GLIFIC_API_URL` resolves
+(`host.docker.internal:4000` in local dev) while overriding only the
+outbound `Host` header httpx would otherwise derive from that URL, so the
+request lands inside the allowlist. This is opt-in via env, exactly like
+`GLIFIC_API_URL` itself — it must never default to a value and must never
+silently activate in staging/prod, where the real fix belongs on Glific's
+side (BR-001), not as a permanent client-side workaround here.
 """
 
 from __future__ import annotations
@@ -89,11 +108,33 @@ class _TokenState:
 
 
 class GlificClient:
-    def __init__(self, base_url: str, phone: str, password: str, timeout: float = 10.0):
+    def __init__(
+        self,
+        base_url: str,
+        phone: str,
+        password: str,
+        timeout: float = 10.0,
+        host_header_override: str | None = None,
+    ):
+        """`host_header_override`: local-dev-only Docker workaround (F-021,
+        see module docstring). When set (non-empty), every request this
+        client makes sends that value as the `Host` header instead of the
+        one httpx would derive from `base_url` — the TCP connection still
+        goes to `base_url`'s real address. Left `None`/empty, the client's
+        behavior is unchanged (no header override sent, current staging/prod
+        behavior). Callers must only pass this from an explicit, opt-in env
+        var (`GLIFIC_HOST_HEADER_OVERRIDE`) — never a hardcoded default.
+        """
         self.base_url = base_url.rstrip("/")
         self.phone = phone
         self.password = password
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout)
+        self.host_header_override = host_header_override or None
+        default_headers = (
+            {"Host": self.host_header_override} if self.host_header_override else None
+        )
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url, timeout=timeout, headers=default_headers
+        )
         self._token: _TokenState | None = None
 
     async def aclose(self) -> None:
