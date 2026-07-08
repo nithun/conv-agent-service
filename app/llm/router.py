@@ -101,15 +101,27 @@ class ModelRouter:
 
 
 def build_default_model_router(
-    openrouter_api_key: str, tracer: Tracer | None = None
+    openrouter_api_key: str,
+    tracer: Tracer | None = None,
+    base_url: str | None = None,
 ) -> ModelRouter:
     """Convenience constructor wiring the one provider this port ships
     (OpenRouter, ADR-011's default) — kept separate from `ModelRouter.__init__`
     so tests can construct a router with fake/mock providers without
     touching real credentials.
-    """
-    from app.llm.providers.openrouter import OpenRouterProvider
 
-    providers: dict[str, Provider] = {"openrouter": OpenRouterProvider(api_key=openrouter_api_key)}
+    `base_url=None` (the default) targets the real OpenRouter URL. A non-None
+    value (wired from `Settings.openrouter_base_url`, local .env only) points
+    the same OpenAI-compatible adapter at a self-hosted gateway instead —
+    e.g. the compose-local LiteLLM service fronting Vertex AI (F-020).
+    """
+    from app.llm.providers.openrouter import OPENROUTER_BASE_URL, OpenRouterProvider
+
+    providers: dict[str, Provider] = {
+        "openrouter": OpenRouterProvider(
+            api_key=openrouter_api_key,
+            base_url=base_url or OPENROUTER_BASE_URL,
+        )
+    }
     resolved_tracer = tracer if tracer is not None else LangfuseTracer()
     return ModelRouter(providers=providers, tracer=resolved_tracer)

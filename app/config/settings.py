@@ -54,6 +54,15 @@ class Settings(BaseSettings):
 
     # --- LLM / observability (populated once secrets exist, WBS 0.3/0.4) ---
     openrouter_api_key: str = ""
+    # Optional override for the OpenAI-compatible endpoint the default
+    # provider adapter targets. Empty (the default) = the real OpenRouter
+    # URL (the adapter's own constant). Set ONLY in a local .env to point at
+    # a self-hosted OpenAI-compatible gateway — e.g. the LiteLLM service in
+    # docker-compose.yml fronting Vertex AI (F-020 local live-verification,
+    # ADR-011's pluggable-backend intent). Same opt-in discipline as
+    # GLIFIC_HOST_HEADER_OVERRIDE: never a baked non-empty default, never
+    # set in staging/prod config.
+    openrouter_base_url: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_host: str = "https://cloud.langfuse.com"

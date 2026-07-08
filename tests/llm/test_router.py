@@ -148,3 +148,35 @@ async def test_tool_calls_pass_through_response() -> None:
     assert response.tool_calls[0].name == "get_next_content"
     _, _, tools_passed = provider.calls[0]
     assert tools_passed == [{"name": "get_next_content"}]
+
+
+# -- build_default_model_router base_url wiring (F-020 local gateway) -----
+
+
+def test_build_default_router_targets_real_openrouter_by_default() -> None:
+    """base_url=None (and settings.openrouter_base_url empty -> None at the
+    call sites) must target the real OpenRouter URL — guards against the
+    local-gateway override silently becoming the default (same discipline
+    as GLIFIC_HOST_HEADER_OVERRIDE's absent-by-default test).
+    """
+    from app.llm.router import build_default_model_router
+    from app.llm.tracing import NullTracer
+
+    router = build_default_model_router("test-key", tracer=NullTracer())
+    provider = router._providers["openrouter"]
+    assert str(provider._client.base_url).startswith("https://openrouter.ai/api/v1")
+
+
+def test_build_default_router_base_url_override_reaches_the_client() -> None:
+    """A non-None base_url (wired from Settings.openrouter_base_url, local
+    .env only) must actually reach the OpenAI-compatible client — this is
+    what points the adapter at the compose-local LiteLLM gateway (F-020).
+    """
+    from app.llm.router import build_default_model_router
+    from app.llm.tracing import NullTracer
+
+    router = build_default_model_router(
+        "test-key", tracer=NullTracer(), base_url="http://litellm:4000"
+    )
+    provider = router._providers["openrouter"]
+    assert str(provider._client.base_url).startswith("http://litellm:4000")

@@ -96,7 +96,10 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
         settings.glific_password,
         host_header_override=settings.glific_host_header_override or None,
     )
-    model_router = build_default_model_router(settings.openrouter_api_key)
+    model_router = build_default_model_router(
+        settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url or None,
+    )
 
     async def process_turn_fn(payload: GlificWebhookPayload) -> TurnProcessingResult:
         return await process_turn(

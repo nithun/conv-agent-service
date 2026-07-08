@@ -1,0 +1,40 @@
+# LiteLLM proxy config — LOCAL DEV ONLY (compose service `litellm`).
+#
+# Purpose (F-020): give the default OpenAI-compatible provider adapter a
+# self-hosted, open-source gateway to call, fronting Vertex AI with the
+# operator's existing GCP credentials (project tap-buddy-mvp, ADR-011's
+# pluggable-backend intent) — so a REAL model call can be made and traced
+# locally without an OpenRouter account/key.
+#
+# The entries below are ALIASES: they map MODEL_ROUTES' existing model ids
+# (app/llm/routes.py — untouched) onto Vertex Gemini models. This is a
+# local-dev serving substitution for live verification, NOT a claim that
+# the aliased models are equivalent — staging/prod still means real
+# OpenRouter (or an ADR-011 benchmark-gated provider change). The Langfuse
+# trace records the route's model id; LiteLLM's own logs show what actually
+# served it.
+#
+# Auth: clients present LITELLM_MASTER_KEY (in .env) as their bearer key —
+# the same value the app reads as OPENROUTER_API_KEY when
+# OPENROUTER_BASE_URL points here. GCP credentials come from the service's
+# read-only mount (GOOGLE_APPLICATION_CREDENTIALS), never from this file.
+
+model_list:
+  - model_name: anthropic/claude-sonnet-5 # tap_buddy_turn (the live route)
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash # tap-buddy's proven model (VERTEX_MODEL default)
+      vertex_project: tap-buddy-mvp
+      vertex_location: us-central1
+  - model_name: anthropic/claude-haiku-4.5 # intent_classification (no call site yet)
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash
+      vertex_project: tap-buddy-mvp
+      vertex_location: us-central1
+  - model_name: anthropic/claude-opus-4.8 # escalation_reasoning (no call site yet)
+    litellm_params:
+      model: vertex_ai/gemini-2.5-flash
+      vertex_project: tap-buddy-mvp
+      vertex_location: us-central1
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

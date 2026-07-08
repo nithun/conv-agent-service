@@ -65,7 +65,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.redis = _build_redis_client(settings)
     app.state.lms_client = _build_lms_client(settings)
-    app.state.model_router = build_default_model_router(settings.openrouter_api_key)
+    app.state.model_router = build_default_model_router(
+        settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url or None,
+    )
     app.state.glific_client = GlificClient(
         settings.glific_api_url,
         settings.glific_phone,

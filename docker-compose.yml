@@ -108,5 +108,26 @@ services:
       LANGFUSE_INIT_USER_NAME: Nithun
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set in .env}
 
+  # Self-hosted LiteLLM proxy (open source) — LOCAL DEV ONLY (F-020). An
+  # OpenAI-compatible gateway fronting Vertex AI with the operator's
+  # existing GCP service account, so a REAL model call can run + be traced
+  # without an OpenRouter account. The app opts in via .env:
+  #   OPENROUTER_BASE_URL=http://litellm:4000  (empty = real OpenRouter)
+  #   OPENROUTER_API_KEY=<LITELLM_MASTER_KEY value>  (client auth to the proxy)
+  # GCP key is mounted read-only from the host path in .env — the file
+  # never enters an image or this repo. Model aliasing: litellm.config.yaml.
+  # Host port 4001 is for humans/debugging only (4000 on the host is Glific).
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    volumes:
+      - ./litellm.config.yaml:/app/config.yaml:ro
+      - ${GCP_SA_KEY_PATH:?set in .env}:/secrets/gcp-sa.json:ro
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcp-sa.json
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set in .env}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4001:4000"
+
 volumes:
   langfuse-db-data:
