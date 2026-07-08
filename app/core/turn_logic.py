@@ -133,12 +133,33 @@ _ADVANCE_ON_TOOL: dict[str, SessionState] = {
 
 
 def _maybe_advance_state(session: SessionData, tool_names: list[str]) -> SessionState | None:
+    """`tool_names` must contain only SUCCESSFUL tool calls — the
+    deterministic state-advance policy (AD-002, ported from tap-buddy)
+    keys every advance on "a successful <tool> call", never on the call
+    merely having been attempted. See `_tool_call_succeeded`.
+    """
     for tool_name in tool_names:
         target = _ADVANCE_ON_TOOL.get(tool_name)
         if target is not None and can_transition(session.state, target):
             transition(session, target)
             return target
     return None
+
+
+def _tool_call_succeeded(name: str, summary: dict[str, Any] | None) -> bool:
+    """Whether a tool call's REAL result qualifies it to drive a state
+    advance. Live-caught 2026-07-08 (CR-004 360° round-2 live pass): a
+    `save_submission` returning `success=False` (a real LMS business
+    failure) still advanced the session to `close` — the child was
+    honestly told the save failed (L-005 held) while the session
+    terminated anyway, leaving session state contradicting LMS reality
+    (L-001-adjacent). Advance keys on the result, not the attempt.
+    """
+    if summary is None:
+        return False
+    if name == "save_submission":
+        return summary.get("success") is True
+    return True
 
 
 async def _execute_tool_call(
@@ -249,6 +270,11 @@ async def run_turn(
 
     tool_names: list[str] = []
     tool_summaries: list[str] = []
+    # Only SUCCESSFUL tool calls may drive a state advance (AD-002's
+    # deterministic policy: "a successful <tool> call advances ...") —
+    # tool_names records every attempt (TurnOutcome.tool_calls_made),
+    # this list records only the ones whose real result succeeded.
+    advance_eligible: list[str] = []
 
     # Deterministic content prefetch: entering content_intro MUST fetch
     # today's content — leaving it to the LLM's tool whim produced generic
@@ -269,6 +295,7 @@ async def run_turn(
             session.content_reference = summary
             tool_names.append("get_next_content")
             tool_summaries.append(f"get_next_content -> {summary}")
+            advance_eligible.append("get_next_content")  # prefetch path is success-gated above
 
     system_prompt = build_system_prompt(
         child_name=session.identity.child_name or "there",
@@ -292,6 +319,8 @@ async def run_turn(
             name, tool_summary = await _execute_tool_call(call, session, lms_client)
             tool_names.append(name)
             tool_summaries.append(f"{name} -> {tool_summary}")
+            if _tool_call_succeeded(name, tool_summary):
+                advance_eligible.append(name)
         except LmsApiError as exc:
             # LMS failure mid-turn: degrade to the fallback reply rather than
             # crash the turn or invent LMS data.
@@ -369,7 +398,7 @@ async def run_turn(
             )
             reply_text = FALLBACK_REPLY
 
-    advanced_to = _maybe_advance_state(session, tool_names)
+    advanced_to = _maybe_advance_state(session, advance_eligible)
 
     return TurnOutcome(
         reply_text=reply_text,

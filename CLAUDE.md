@@ -90,9 +90,11 @@ staging/prod artifact) serves both.
 
 ```bash
 cp .env.example .env        # first time only; fill in secrets as they exist
-docker compose up --build   # boots app (8000) + worker + Redis (6379)
-curl http://localhost:8000/health
-docker compose ps           # confirm app, worker, AND redis are all Up
+docker compose up --build   # boots app (HOST PORT 8001) + worker + Redis (6379)
+                            # + self-hosted Langfuse (dashboard :3001) +
+                            # LiteLLM gateway (:4001) — see .env.example
+curl http://localhost:8001/health
+docker compose ps           # confirm app, worker, redis, langfuse, litellm all Up
 docker compose down         # tear down when finished
 ```
 
@@ -108,6 +110,11 @@ returning 200 OK) but every turn reply and every distress escalation is
 silently dropped — there is no error surfaced anywhere in that path. Run
 `docker compose ps` after `up` and confirm `worker` shows `Up`, not just
 `app`/`redis`.
+
+**App publishes on host port 8001, not 8000** — tap-buddy (still the live
+Glific webhook target until F-019's cutover) holds 8000, and both services
+run side by side through the transition. glific-platform's CR-001 re-point
+must target this service's 8001.
 
 `GLIFIC_API_URL=http://host.docker.internal:4000` in `.env.example` is a
 **macOS-only Docker networking value** (Glific dev runs on the host, not in

@@ -27,6 +27,7 @@ from app.core.state_machine import (
 )
 from app.core.turn_logic import TAP_BUDDY_TURN_ROUTE, handle_off_turn, run_turn
 from app.llm.types import ModelResponse, ToolCall
+from app.tools.lms_client import SubmissionResult
 from app.tools.lms_mock import MockTapLmsClient
 
 
@@ -561,3 +562,76 @@ async def test_run_turn_ships_reply_unmodified_when_it_passes_all_validators() -
 
     assert len(router.calls) == 1
     assert outcome.reply_text == "Hi there!"
+
+
+# -- state advance requires tool SUCCESS, not just a tool CALL ------------
+# Live-caught 2026-07-08 (CR-004 360° round-2 live pass): a real
+# save_submission business failure (success=False from the live LMS) still
+# advanced the session to close — the child was told the save failed
+# (L-005 held) while the session terminated anyway. AD-002's deterministic
+# policy says "a SUCCESSFUL <tool> call advances"; these pin that.
+
+
+class _FailingSubmissionLms(MockTapLmsClient):
+    async def save_submission(self, student_id, content_id, submission):
+        await super().save_submission(student_id, content_id, submission)
+        return SubmissionResult(success=False, status="validation_error")
+
+
+class _NoContentLms(MockTapLmsClient):
+    async def get_next_content(self, student_id):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_failed_save_submission_does_not_advance_to_close():
+    session = _session_at(SessionState.ACTIVITY_IN_PROGRESS)
+    router = FakeModelRouter(
+        scripted_result=ModelResponse(
+            text="Hmm, I couldn't save that yet.",
+            tool_calls=[
+                ToolCall(
+                    name="save_submission",
+                    arguments={
+                        "student_id": "STU-001",
+                        "content_id": "CONTENT-101",
+                        "submission": "done",
+                    },
+                )
+            ],
+        )
+    )
+
+    outcome = await run_turn(
+        session=session,
+        user_input="I'm done!",
+        model_router=router,
+        lms_client=_FailingSubmissionLms(),
+    )
+
+    assert outcome.advanced_to is None
+    assert outcome.session.state == SessionState.ACTIVITY_IN_PROGRESS
+    # The attempt is still recorded — only the ADVANCE is gated on success.
+    assert "save_submission" in outcome.tool_calls_made
+
+
+@pytest.mark.asyncio
+async def test_get_next_content_returning_none_does_not_advance():
+    session = _session_at(SessionState.CONTENT_INTRO)
+    # Session must already carry a content_reference so the prefetch path
+    # (which is separately success-gated) is skipped and the MODEL-driven
+    # tool call is the one under test.
+    session.content_reference = {"content_id": "C-0", "title": "t", "content_type": "video"}
+    router = FakeModelRouter(
+        scripted_result=ModelResponse(
+            text="Let me check what's next.",
+            tool_calls=[ToolCall(name="get_next_content", arguments={"student_id": "STU-001"})],
+        )
+    )
+
+    outcome = await run_turn(
+        session=session, user_input="yes", model_router=router, lms_client=_NoContentLms()
+    )
+
+    assert outcome.advanced_to is None
+    assert outcome.session.state == SessionState.CONTENT_INTRO

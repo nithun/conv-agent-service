@@ -16,7 +16,12 @@ services:
       context: .
       target: dev
     ports:
-      - "8000:8000"
+      # Host 8001 (container 8000): tap-buddy — still the live Glific
+      # webhook target until F-019's cutover — holds host 8000, and both
+      # services must run side by side through the transition window.
+      # glific-platform's CR-001 must point the flow webhook at THIS
+      # service's published port (8001) when it executes the re-point.
+      - "8001:8000"
     env_file:
       - .env
     environment:
