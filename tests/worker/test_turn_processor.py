@@ -12,12 +12,16 @@ import fakeredis.aioredis
 import pytest
 
 from app.config.settings import Settings
-from app.core.state_machine import SessionState
+from app.core.state_machine import SessionState, new_session
 from app.ingress.glific_payload import GlificWebhookPayload
 from app.llm.types import ModelResponse
 from app.tools.lms_mock import MockTapLmsClient
 from app.worker.session_store import RedisSessionStore
-from app.worker.turn_processor import process_turn
+from app.worker.turn_processor import (
+    TurnProcessingResult,
+    maybe_rearm_turn_flow,
+    process_turn,
+)
 
 
 @dataclass
@@ -278,3 +282,87 @@ async def test_activity_in_progress_completion_calls_save_submission_via_run_tur
     assert result.session.state == SessionState.CLOSE
     assert len(lms.submissions) == 1
     assert result.reply_sent is True
+
+
+# ---- maybe_rearm_turn_flow (F-019 cutover fix, 2026-07-16) ----------------
+#
+# The CR-004 port shipped GLIFIC_TURN_FLOW_ID and
+# GlificClient.start_contact_flow with NO call site — without the re-arm,
+# the contact's second message never reaches this service through a real
+# Glific flow (found live when the F-019 cutover smoke stalled after turn
+# 1). These tests pin the ported semantics from tap-buddy's
+# `_maybe_rearm_turn_flow`.
+
+
+@dataclass
+class FakeFlowStarter:
+    started: list[tuple[str, str]] = field(default_factory=list)
+    raise_error: bool = False
+
+    async def start_contact_flow(self, flow_id: str, contact_id: str) -> bool:
+        if self.raise_error:
+            raise RuntimeError("glific unreachable")
+        self.started.append((flow_id, contact_id))
+        return True
+
+
+def _result_in_state(state: SessionState) -> TurnProcessingResult:
+    session = new_session("c1", "917834811114", needs_identity_confirmation=True)
+    session.state = state
+    return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+
+
+@pytest.mark.asyncio
+async def test_rearm_fires_after_a_normal_turn() -> None:
+    starter = FakeFlowStarter()
+    rearmed = await maybe_rearm_turn_flow(
+        _result_in_state(SessionState.IDENTITY_CONFIRMATION),
+        _payload(contact_id="c1"),
+        turn_flow_id="26",
+        glific_client=starter,
+    )
+    assert rearmed is True
+    assert starter.started == [("26", "c1")]
+
+
+@pytest.mark.asyncio
+async def test_rearm_skipped_when_turn_flow_id_unset() -> None:
+    starter = FakeFlowStarter()
+    rearmed = await maybe_rearm_turn_flow(
+        _result_in_state(SessionState.GREETING),
+        _payload(contact_id="c1"),
+        turn_flow_id="",
+        glific_client=starter,
+    )
+    assert rearmed is False
+    assert starter.started == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [SessionState.CLOSE, SessionState.ESCALATED])
+async def test_rearm_skipped_after_terminal_states(state: SessionState) -> None:
+    # Conversation over — the keyword flow is the way back in, never a
+    # re-armed turn flow (ported tap-buddy semantics).
+    starter = FakeFlowStarter()
+    rearmed = await maybe_rearm_turn_flow(
+        _result_in_state(state),
+        _payload(contact_id="c1"),
+        turn_flow_id="26",
+        glific_client=starter,
+    )
+    assert rearmed is False
+    assert starter.started == []
+
+
+@pytest.mark.asyncio
+async def test_rearm_failure_is_swallowed_not_raised() -> None:
+    # The turn already succeeded (reply sent) — a re-arm failure must not
+    # bubble into the consumer loop's retry/DLQ path.
+    starter = FakeFlowStarter(raise_error=True)
+    rearmed = await maybe_rearm_turn_flow(
+        _result_in_state(SessionState.GREETING),
+        _payload(contact_id="c1"),
+        turn_flow_id="26",
+        glific_client=starter,
+    )
+    assert rearmed is False

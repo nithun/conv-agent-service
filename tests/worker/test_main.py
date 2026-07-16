@@ -87,3 +87,105 @@ async def test_run_worker_loop_drains_the_escalation_stream_each_iteration(monke
     assert len(drain_calls) == 1
     assert drain_calls[0][0] is fake_redis
     assert drain_calls[0][1] == worker_main_module.ESCALATION_CONSUMER_NAME
+
+
+# ---- build_process_turn_fn: turn-flow re-arm reachability (F-019) ---------
+#
+# L-011/P-005's call-site check, applied to the re-arm: it is not enough
+# that `maybe_rearm_turn_flow` exists and passes its own unit tests — the
+# worker's actual per-entry turn function must CALL it after processing.
+# The CR-004 port shipped setting + client method with no call site and
+# every mocked suite stayed green; the gap only surfaced live at the F-019
+# cutover smoke (turn 2 fell through to Glific's out-of-office handler).
+
+
+@pytest.mark.asyncio
+async def test_process_turn_fn_rearms_turn_flow_after_processing() -> None:
+    from dataclasses import dataclass, field
+
+    from app.ingress.glific_payload import GlificWebhookPayload
+    from app.worker.main import build_process_turn_fn
+    from app.worker.session_store import RedisSessionStore
+
+    @dataclass
+    class RecordingGlificClient:
+        sent_texts: list[tuple[str, str]] = field(default_factory=list)
+        started_flows: list[tuple[str, str]] = field(default_factory=list)
+
+        async def send_text(self, receiver_id: str, body_text: str) -> dict[str, str]:
+            self.sent_texts.append((receiver_id, body_text))
+            return {"id": "fake-message-id"}
+
+        async def create_ticket(self, contact_id: str, topic: str, body_text: str) -> dict:
+            return {"id": "fake-ticket-id"}
+
+        async def start_contact_flow(self, flow_id: str, contact_id: str) -> bool:
+            self.started_flows.append((flow_id, contact_id))
+            return True
+
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    session_store = RedisSessionStore(redis, Settings(_env_file=None))
+    glific = RecordingGlificClient()
+
+    process_turn_fn = build_process_turn_fn(
+        session_store=session_store,
+        lms_client=object(),  # first-message branch never touches the LMS
+        model_router=object(),  # ...nor the model router
+        glific_client=glific,  # type: ignore[arg-type]
+        turn_flow_id="26",
+    )
+
+    payload = GlificWebhookPayload(
+        contact_id="7", phone="917834811114", message_id="m-rearm-1", text="buddy"
+    )
+    result = await process_turn_fn(payload)
+
+    assert result.handled is True
+    assert len(glific.sent_texts) == 1  # the name-ask greeting went out
+    # THE point of this test: the turn function re-armed the relay flow so
+    # the contact's next message reaches this service through Glific at all.
+    assert glific.started_flows == [("26", "7")]
+
+
+@pytest.mark.asyncio
+async def test_process_turn_fn_skips_rearm_when_flow_id_unset() -> None:
+    from dataclasses import dataclass, field
+
+    from app.ingress.glific_payload import GlificWebhookPayload
+    from app.worker.main import build_process_turn_fn
+    from app.worker.session_store import RedisSessionStore
+
+    @dataclass
+    class RecordingGlificClient:
+        sent_texts: list[tuple[str, str]] = field(default_factory=list)
+        started_flows: list[tuple[str, str]] = field(default_factory=list)
+
+        async def send_text(self, receiver_id: str, body_text: str) -> dict[str, str]:
+            self.sent_texts.append((receiver_id, body_text))
+            return {"id": "fake-message-id"}
+
+        async def create_ticket(self, contact_id: str, topic: str, body_text: str) -> dict:
+            return {"id": "fake-ticket-id"}
+
+        async def start_contact_flow(self, flow_id: str, contact_id: str) -> bool:
+            self.started_flows.append((flow_id, contact_id))
+            return True
+
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    session_store = RedisSessionStore(redis, Settings(_env_file=None))
+    glific = RecordingGlificClient()
+
+    process_turn_fn = build_process_turn_fn(
+        session_store=session_store,
+        lms_client=object(),
+        model_router=object(),
+        glific_client=glific,  # type: ignore[arg-type]
+        turn_flow_id="",
+    )
+
+    payload = GlificWebhookPayload(
+        contact_id="8", phone="917834811114", message_id="m-rearm-2", text="buddy"
+    )
+    await process_turn_fn(payload)
+
+    assert glific.started_flows == []

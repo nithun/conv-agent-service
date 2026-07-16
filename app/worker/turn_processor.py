@@ -48,6 +48,15 @@ class _GlificSender(Protocol):
     async def create_ticket(self, contact_id: str, topic: str, body_text: str) -> object: ...
 
 
+class _FlowStarter(Protocol):
+    """Structural type for the turn-flow re-arm — the one method of
+    `app.delivery.glific_client.GlificClient` that `maybe_rearm_turn_flow`
+    needs.
+    """
+
+    async def start_contact_flow(self, flow_id: str, contact_id: str) -> object: ...
+
+
 @dataclass
 class TurnProcessingResult:
     """What one call to `process_turn` did — the worker/DLQ layer inspects
@@ -178,3 +187,42 @@ async def process_turn(
         session=outcome.session,
         reply_sent=True,
     )
+
+
+async def maybe_rearm_turn_flow(
+    result: TurnProcessingResult,
+    payload: GlificWebhookPayload,
+    *,
+    turn_flow_id: str,
+    glific_client: _FlowStarter,
+) -> bool:
+    """Re-arm the 'TAP Buddy Turn' relay flow for this contact after a
+    processed turn. Ported from tap-buddy's
+    `adapters/glific_webhook.py::_maybe_rearm_turn_flow` — the CR-004 port
+    carried the `GLIFIC_TURN_FLOW_ID` setting and the
+    `GlificClient.start_contact_flow` method but no call site, found live
+    when the F-019 cutover smoke stalled after turn 1 (2026-07-16).
+
+    Why re-arm at all: Glific's webhook Oban jobs are unique on
+    (context_id, url, action_id) for 60s, so a wait->webhook loop inside ONE
+    flow context silently drops every repeat call — each turn needs a fresh
+    flow run. After every reply we start the turn flow again: it parks at a
+    wait node, the child's next message resumes it, its webhook node calls
+    us, and it ends. No re-arm after close/escalation — the conversation is
+    over and the keyword flow is the way back in.
+
+    Never raises: the turn itself already succeeded (reply sent); a re-arm
+    failure must not push the already-processed entry into retry/DLQ. It is
+    logged and returns False.
+    """
+    if not turn_flow_id:
+        return False
+    session = result.session
+    if session is not None and session.state in (SessionState.CLOSE, SessionState.ESCALATED):
+        return False
+    try:
+        await glific_client.start_contact_flow(turn_flow_id, payload.contact_id)
+        return True
+    except Exception:
+        logger.exception("turn-flow re-arm failed for contact=%s", payload.contact_id)
+        return False

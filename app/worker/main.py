@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from redis.asyncio import Redis
 
@@ -47,7 +49,11 @@ from app.tools.lms_client import TapLmsClient
 from app.worker.consumer_loop import drain_contact_stream_once
 from app.worker.escalation_consumer import drain_escalation_stream_once
 from app.worker.session_store import RedisSessionStore
-from app.worker.turn_processor import TurnProcessingResult, process_turn
+from app.worker.turn_processor import (
+    TurnProcessingResult,
+    maybe_rearm_turn_flow,
+    process_turn,
+)
 
 logger = logging.getLogger("app.worker.main")
 
@@ -60,6 +66,42 @@ async def _discover_active_contact_ids(redis: Redis) -> list[str]:
     keys: list[str] = await redis.keys(f"{STREAM_KEY_PREFIX}*")
     prefix_len = len(STREAM_KEY_PREFIX)
     return [key[prefix_len:] for key in keys]
+
+
+def build_process_turn_fn(
+    *,
+    session_store: RedisSessionStore,
+    lms_client: Any,
+    model_router: Any,
+    glific_client: GlificClient,
+    turn_flow_id: str,
+) -> Callable[[GlificWebhookPayload], Awaitable[TurnProcessingResult]]:
+    """Composes the worker's per-entry turn function: process the turn, then
+    re-arm the turn-relay flow (`maybe_rearm_turn_flow`) so the contact's
+    NEXT message reaches this service at all. Module-level (not inline in
+    `run_worker_loop`) so the re-arm call site itself is unit-testable —
+    the CR-004 port originally shipped the setting and the client method
+    with no call site, caught live at F-019 cutover (L-011's exact
+    unwired-control failure class).
+    """
+
+    async def process_turn_fn(payload: GlificWebhookPayload) -> TurnProcessingResult:
+        result = await process_turn(
+            payload,
+            session_store=session_store,
+            lms_client=lms_client,
+            model_router=model_router,
+            glific_client=glific_client,
+        )
+        await maybe_rearm_turn_flow(
+            result,
+            payload,
+            turn_flow_id=turn_flow_id,
+            glific_client=glific_client,
+        )
+        return result
+
+    return process_turn_fn
 
 
 def _build_redis_client(settings: Settings) -> Redis:
@@ -101,14 +143,13 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
         base_url=settings.openrouter_base_url or None,
     )
 
-    async def process_turn_fn(payload: GlificWebhookPayload) -> TurnProcessingResult:
-        return await process_turn(
-            payload,
-            session_store=session_store,
-            lms_client=lms_client,
-            model_router=model_router,
-            glific_client=glific_client,
-        )
+    process_turn_fn = build_process_turn_fn(
+        session_store=session_store,
+        lms_client=lms_client,
+        model_router=model_router,
+        glific_client=glific_client,
+        turn_flow_id=settings.glific_turn_flow_id,
+    )
 
     logger.info("worker loop starting (redis_url=%s)", settings.redis_url)
     iteration = 0
