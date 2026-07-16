@@ -68,6 +68,26 @@ async def _discover_active_contact_ids(redis: Redis) -> list[str]:
     return [key[prefix_len:] for key in keys]
 
 
+def _build_speech_client(settings: Settings) -> Any | None:
+    """Settings-gated Google STT/TTS client construction (BR-004 Task 1/2),
+    mirroring tap-buddy's `_build_speech_client(settings)`
+    (`tap-buddy/src/tap_buddy/main.py:34-39`): returns `None` whenever
+    `settings.google_application_credentials` is empty (credentials absent
+    — CI, a fresh dev box before secrets exist) so voice turns degrade
+    gracefully (text-only) rather than a bare unguarded `SpeechClient()`
+    call crashing worker startup via `DefaultCredentialsError`. Imported
+    lazily (only on the configured path) for the same reason
+    `SpeechClient.__init__` itself lazily imports `google.cloud.speech`/
+    `texttospeech` — this module must remain importable with no
+    google-cloud packages configured with valid ADC.
+    """
+    if not settings.google_application_credentials:
+        return None
+    from app.tools.speech_client import SpeechClient
+
+    return SpeechClient()
+
+
 def build_process_turn_fn(
     *,
     session_store: RedisSessionStore,
@@ -75,6 +95,8 @@ def build_process_turn_fn(
     model_router: Any,
     glific_client: GlificClient,
     turn_flow_id: str,
+    speech_client: Any | None = None,
+    settings: Settings | None = None,
 ) -> Callable[[GlificWebhookPayload], Awaitable[TurnProcessingResult]]:
     """Composes the worker's per-entry turn function: process the turn, then
     re-arm the turn-relay flow (`maybe_rearm_turn_flow`) so the contact's
@@ -83,6 +105,12 @@ def build_process_turn_fn(
     the CR-004 port originally shipped the setting and the client method
     with no call site, caught live at F-019 cutover (L-011's exact
     unwired-control failure class).
+
+    `speech_client`/`settings` (BR-004 Tasks 2-4): threaded straight
+    through to `process_turn` — this is the SAME optional `SpeechClient`
+    instance used for both inbound transcription and outbound TTS, built
+    once here (`_build_speech_client`, not per-call) and generic rather
+    than transcription-specific, since Task 4's TTS reply reuses it too.
     """
 
     async def process_turn_fn(payload: GlificWebhookPayload) -> TurnProcessingResult:
@@ -105,6 +133,8 @@ def build_process_turn_fn(
                 lms_client=lms_client,
                 model_router=model_router,
                 glific_client=glific_client,
+                speech_client=speech_client,
+                settings=settings,
             )
             return result
         finally:
@@ -156,6 +186,7 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
         settings.openrouter_api_key,
         base_url=settings.openrouter_base_url or None,
     )
+    speech_client = _build_speech_client(settings)
 
     process_turn_fn = build_process_turn_fn(
         session_store=session_store,
@@ -163,9 +194,15 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
         model_router=model_router,
         glific_client=glific_client,
         turn_flow_id=settings.glific_turn_flow_id,
+        speech_client=speech_client,
+        settings=settings,
     )
 
-    logger.info("worker loop starting (redis_url=%s)", settings.redis_url)
+    logger.info(
+        "worker loop starting (redis_url=%s, speech_client_configured=%s)",
+        settings.redis_url,
+        speech_client is not None,
+    )
     iteration = 0
     try:
         while max_iterations is None or iteration < max_iterations:

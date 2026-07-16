@@ -19,7 +19,13 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.core.state_machine import EscalationReason, SessionState, escalate, new_session
+from app.core.state_machine import (
+    EscalationReason,
+    SessionData,
+    SessionState,
+    escalate,
+    new_session,
+)
 from app.core.turn_logic import DISTRESS_CLOSE_REPLY
 from app.ingress.glific_payload import GlificWebhookPayload
 from app.worker.escalation import open_ticket_for_escalation
@@ -29,6 +35,34 @@ from app.worker.session_store import RedisSessionStore
 class _GlificSender(Protocol):
     async def send_text(self, receiver_id: str, body_text: str) -> object: ...
     async def create_ticket(self, contact_id: str, topic: str, body_text: str) -> object: ...
+
+
+async def _escalate_for_distress(
+    session: SessionData,
+    contact_id: str,
+    *,
+    session_store: RedisSessionStore,
+    glific_client: _GlificSender,
+) -> None:
+    """The escalate + save + close-reply + ticket sequence shared by BOTH
+    distress gates: this module's own ingress-reachable `handle_distress`
+    (which loads/creates its own session) and
+    `app/worker/turn_processor.py`'s worker-side, audio-transcript-only
+    distress check (BR-004 Task 3), which has ALREADY loaded (or just
+    created) its session and must not re-load it a second time or
+    duplicate this 3-step sequence verbatim.
+
+    Never raises on a Ticket-creation failure (logs instead, via
+    `open_ticket_for_escalation`) — a child-safety close reply must go out
+    even if the Ticket call itself fails; the reply already tells the
+    child a human is coming.
+    """
+    escalate(session, EscalationReason.DISTRESS)
+    await session_store.save_session(session)
+
+    await glific_client.send_text(contact_id, DISTRESS_CLOSE_REPLY)
+
+    await open_ticket_for_escalation(contact_id, session, glific_client)
 
 
 async def handle_distress(
@@ -48,12 +82,9 @@ async def handle_distress(
     if session is None:
         session = new_session(payload.contact_id, payload.phone, needs_identity_confirmation=False)
 
-    escalate(session, EscalationReason.DISTRESS)
-    await session_store.save_session(session)
-
-    await glific_client.send_text(payload.contact_id, DISTRESS_CLOSE_REPLY)
-
-    await open_ticket_for_escalation(payload.contact_id, session, glific_client)
+    await _escalate_for_distress(
+        session, payload.contact_id, session_store=session_store, glific_client=glific_client
+    )
 
 
 def session_is_terminal(state: SessionState) -> bool:

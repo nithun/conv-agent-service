@@ -23,16 +23,22 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.config.settings import Settings
+from app.core.guardrails_checks import detect_distress
 from app.core.identity import confirm_identity, resolve_identity_by_name
 from app.core.state_machine import (
     EscalationReason,
     SessionData,
     SessionState,
+    escalate,
     new_session,
+    reset_asr_failures,
     transition,
 )
-from app.core.turn_logic import ModelRouterLike, run_turn
+from app.core.turn_logic import ModelRouterLike, handle_low_confidence_asr, run_turn
 from app.ingress.glific_payload import GlificWebhookPayload
+from app.ingress.media import synthesize_and_store, transcribe_inbound_media
+from app.worker.distress_gate import _escalate_for_distress
 from app.worker.escalation import open_ticket_for_escalation
 from app.worker.session_store import RedisSessionStore
 
@@ -46,6 +52,13 @@ class _GlificSender(Protocol):
 
     async def send_text(self, receiver_id: str, body_text: str) -> object: ...
     async def create_ticket(self, contact_id: str, topic: str, body_text: str) -> object: ...
+    async def send_audio(
+        self,
+        receiver_id: str,
+        media_url: str,
+        caption: str | None = None,
+        sender_id: str | None = None,
+    ) -> object: ...
 
 
 class _FlowStarter(Protocol):
@@ -71,6 +84,52 @@ class TurnProcessingResult:
     reply_sent: bool = False
 
 
+async def _deliver_reply(
+    contact_id: str,
+    reply_text: str,
+    session: SessionData,
+    *,
+    speech_client: Any | None,
+    settings: Settings | None,
+    glific_client: _GlificSender,
+) -> None:
+    """BR-004 Task 4: voice-mode sessions with a configured speech client
+    get a TTS reply (`synthesize_and_store` + `send_audio` — `send_audio`
+    itself calls `register_media` internally, see
+    `app/delivery/glific_client.py::GlificClient.send_audio`); every other
+    case (text-mode, or a voice-mode session with no speech client
+    configured) gets the plain `send_text` reply, unchanged.
+
+    Failure classes are deliberately distinct (code-review note, Task 4):
+    a `PUBLIC_BASE_URL`-unset `ValueError` from `synthesize_and_store` is a
+    CONFIG BUG and propagates loudly — it must not be silently swallowed
+    into a text fallback. A synthesis/registration/send failure (the
+    speech provider erroring, or the Glific audio-send call failing) is a
+    genuine "TTS didn't work this turn" case and DOES fall back to
+    `send_text`, so the reply is never silently dropped.
+    """
+    if session.mode == "voice" and speech_client is not None and settings is not None:
+        try:
+            media_url = await synthesize_and_store(reply_text, session, speech_client, settings)
+        except ValueError:
+            raise
+        except Exception:
+            logger.exception(
+                "TTS synthesis failed for contact=%s; falling back to text reply", contact_id
+            )
+        else:
+            try:
+                await glific_client.send_audio(contact_id, media_url)
+                return
+            except Exception:
+                logger.exception(
+                    "TTS audio delivery failed for contact=%s; falling back to text reply",
+                    contact_id,
+                )
+
+    await glific_client.send_text(contact_id, reply_text)
+
+
 async def process_turn(
     payload: GlificWebhookPayload,
     *,
@@ -78,6 +137,8 @@ async def process_turn(
     lms_client: Any,
     model_router: ModelRouterLike,
     glific_client: _GlificSender,
+    speech_client: Any | None = None,
+    settings: Settings | None = None,
 ) -> TurnProcessingResult:
     """Processes exactly one enqueued turn. Ported decision tree from
     tap-buddy's `_process_turn` (identity resolution -> greeting/readiness
@@ -85,10 +146,98 @@ async def process_turn(
     ModelRouter. The caller (the consumer loop, `app/worker/consumer_loop.py`)
     is responsible for ack/retry/dead-letter around this call — this
     function itself does not touch the Redis Stream.
+
+    `speech_client`/`settings` (BR-004 Tasks 2-4): optional — constructed
+    once by the worker entrypoint (`app/worker/main.py::_build_speech_client`,
+    gated on `settings.google_application_credentials`) and threaded through
+    here for BOTH inbound transcription and outbound TTS. `speech_client`
+    is `None` whenever credentials aren't configured (CI, a fresh dev box)
+    — every call site below degrades gracefully in that case (audio turns
+    fall through with an empty transcript; voice-mode replies fall back to
+    text), never crashing the worker.
     """
     user_text = payload.text or ""
 
     session = await session_store.load_session(payload.contact_id)
+
+    # ---- BR-004 Task 2/3: audio-turn transcription, ASR-failure
+    # clarification/fallback/escalation, and the worker-side distress check
+    # — ALL placed here, before any of the state branches below, mirroring
+    # tap-buddy's `_process_turn` structural position (transcribe -> handle
+    # low-confidence ASR -> distress check -> state handling). Text turns
+    # are entirely untouched by this block (no second distress check for
+    # text — the ingress-level gate already covers it).
+    media_url = payload.media_url
+    if payload.message_type == "audio" and media_url:
+        transcript = ""
+        low_confidence = False
+        if speech_client is not None:
+            transcript = await transcribe_inbound_media(media_url, session, speech_client)
+            low_confidence = not transcript
+        else:
+            # No speech client configured (credentials absent, Task 1's
+            # gate) — cannot transcribe at all. Degrade gracefully: proceed
+            # exactly as if this turn carried no resolvable text, same as a
+            # low-confidence transcript, but without touching the
+            # asr_failure_count (there's nothing to attribute a genuine ASR
+            # failure to when ASR never ran).
+            low_confidence = True
+
+        if not low_confidence:
+            user_text = transcript
+            if session is not None:
+                reset_asr_failures(session)
+                await session_store.save_session(session)
+        elif speech_client is not None and session is not None:
+            # A real (attempted) low-confidence transcription against an
+            # EXISTING session — the consecutive-failure cap is meaningful
+            # here. A brand-new contact (session is None) or a missing
+            # speech client falls through with empty user_text instead;
+            # the "session is None" branch below already handles a
+            # first-ever contact identically regardless of input content.
+            clarification_reply, should_fallback = handle_low_confidence_asr(session)
+            if should_fallback:
+                session.mode = "text"
+                escalate(session, EscalationReason.ASR_FAILURE)
+            await session_store.save_session(session)
+            await glific_client.send_text(payload.contact_id, clarification_reply)
+            if should_fallback:
+                await open_ticket_for_escalation(payload.contact_id, session, glific_client)
+            return TurnProcessingResult(
+                handled=True,
+                escalated=should_fallback,
+                escalation_reason=session.escalation_reason if should_fallback else None,
+                session=session,
+                reply_sent=True,
+            )
+
+        # Worker-side distress check (Task 3, child-safety/BLOCKING tier):
+        # runs on the RESOLVED transcript only (empty/low-confidence
+        # transcripts have nothing to check) — this is the audio-turn
+        # counterpart to the ingress-level gate, which structurally cannot
+        # see a transcript that doesn't exist yet at webhook-receipt time.
+        # Reuses the SAME escalation surface as that gate
+        # (`distress_gate._escalate_for_distress`), never a new path.
+        if user_text and detect_distress(
+            user_text, session.identity.tap_language if session else None
+        ):
+            if session is None:
+                session = new_session(
+                    payload.contact_id, payload.phone, needs_identity_confirmation=False
+                )
+            await _escalate_for_distress(
+                session,
+                payload.contact_id,
+                session_store=session_store,
+                glific_client=glific_client,
+            )
+            return TurnProcessingResult(
+                handled=True,
+                escalated=True,
+                escalation_reason=EscalationReason.DISTRESS,
+                session=session,
+                reply_sent=True,
+            )
 
     if session is None:
         # First message from this contact — ask for their name before any
@@ -170,7 +319,14 @@ async def process_turn(
     )
     await session_store.save_session(outcome.session)
 
-    await glific_client.send_text(payload.contact_id, outcome.reply_text)
+    await _deliver_reply(
+        payload.contact_id,
+        outcome.reply_text,
+        outcome.session,
+        speech_client=speech_client,
+        settings=settings,
+        glific_client=glific_client,
+    )
 
     if outcome.escalated:
         # Task 13/Invariant 5: every escalation trigger reachable through

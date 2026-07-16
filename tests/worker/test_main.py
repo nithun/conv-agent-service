@@ -10,7 +10,7 @@ import fakeredis.aioredis
 import pytest
 
 from app.config.settings import Settings
-from app.worker.main import _build_redis_client, _discover_active_contact_ids
+from app.worker.main import _build_redis_client, _build_speech_client, _discover_active_contact_ids
 
 
 @pytest.mark.asyncio
@@ -35,6 +35,39 @@ def test_worker_build_redis_client_sets_decode_responses_true() -> None:
     settings = Settings(redis_url="redis://localhost:6379", _env_file=None)
     client = _build_redis_client(settings)
     assert client.connection_pool.connection_kwargs.get("decode_responses") is True
+
+
+# ---- _build_speech_client: settings-gated construction (BR-004 Task 1) ---
+#
+# Mirrors tap-buddy's `_build_speech_client(settings)`
+# (tap-buddy/src/tap_buddy/main.py:34-39): empty credentials -> None, never
+# a bare unguarded SpeechClient() call that would crash worker startup via
+# DefaultCredentialsError wherever creds are absent (CI, a fresh dev box).
+
+
+def test_build_speech_client_returns_none_when_credentials_unset() -> None:
+    settings = Settings(google_application_credentials="", _env_file=None)
+    assert _build_speech_client(settings) is None
+
+
+def test_build_speech_client_constructs_when_credentials_configured(monkeypatch) -> None:
+    import app.tools.speech_client as speech_client_module
+
+    constructed: list[bool] = []
+
+    class _FakeSpeechClient:
+        def __init__(self) -> None:
+            constructed.append(True)
+
+    monkeypatch.setattr(speech_client_module, "SpeechClient", _FakeSpeechClient)
+
+    settings = Settings(
+        google_application_credentials="/secrets/gcp-sa.json", _env_file=None
+    )
+    client = _build_speech_client(settings)
+
+    assert client is not None
+    assert constructed == [True]
 
 
 @pytest.mark.asyncio
@@ -280,3 +313,55 @@ async def test_run_worker_loop_builds_turn_fn_with_settings_flow_id(monkeypatch)
     await worker_main_module.run_worker_loop(max_iterations=1)
 
     assert captured.get("turn_flow_id") == "26"
+
+
+@pytest.mark.asyncio
+async def test_run_worker_loop_threads_speech_client_and_settings_into_turn_fn(
+    monkeypatch,
+) -> None:
+    # BR-004 Task 2's shared plumbing: run_worker_loop must build the
+    # (possibly-None) speech client via _build_speech_client and pass BOTH
+    # it and settings through to build_process_turn_fn — otherwise
+    # process_turn never receives what Tasks 2-4's call sites need, even
+    # once they exist.
+    import app.worker.main as worker_main_module
+
+    fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(worker_main_module, "_build_redis_client", lambda settings: fake_redis)
+
+    class _Noop:
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(worker_main_module, "TapLmsClient", lambda *a, **kw: _Noop())
+    monkeypatch.setattr(worker_main_module, "GlificClient", lambda *a, **kw: _Noop())
+    monkeypatch.setattr(worker_main_module, "build_default_model_router", lambda *a, **kw: object())
+
+    configured_settings = Settings(
+        _env_file=None, google_application_credentials="/secrets/gcp-sa.json"
+    )
+    monkeypatch.setattr(worker_main_module, "get_settings", lambda: configured_settings)
+
+    sentinel_speech_client = object()
+    monkeypatch.setattr(
+        worker_main_module, "_build_speech_client", lambda settings: sentinel_speech_client
+    )
+
+    captured: dict[str, object] = {}
+    real_build = worker_main_module.build_process_turn_fn
+
+    def _recording_build(**kwargs):
+        captured.update(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(worker_main_module, "build_process_turn_fn", _recording_build)
+
+    async def _noop_drain(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(worker_main_module, "drain_escalation_stream_once", _noop_drain)
+
+    await worker_main_module.run_worker_loop(max_iterations=1)
+
+    assert captured.get("speech_client") is sentinel_speech_client
+    assert captured.get("settings") is configured_settings
