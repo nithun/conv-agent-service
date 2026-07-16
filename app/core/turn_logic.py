@@ -171,7 +171,13 @@ async def _execute_tool_call(
     (L-005).
     """
     if call.name == "get_next_content":
-        content = await lms_client.get_next_content(call.arguments.get("student_id", ""))
+        # Same identifier-authority rule as save_submission below: the
+        # session's resolved student_id wins over whatever the model put in
+        # the arguments (the deterministic content_intro prefetch already
+        # uses the session id; this aligns the model-tool path with it).
+        content = await lms_client.get_next_content(
+            session.identity.student_id or call.arguments.get("student_id", "")
+        )
         if content is None:
             return call.name, None
         summary = {
@@ -193,9 +199,20 @@ async def _execute_tool_call(
         return call.name, {"hint": details.hint, "question_text": details.question_text}
 
     if call.name == "save_submission":
+        # Identifier authority (F-026 root-cause fix, 2026-07-16):
+        # student_id/content_id come from the SESSION, never from the model.
+        # The real ids are not in the system prompt, so a model-supplied
+        # value is by construction invented or empty — every live
+        # save_submission before this fix went out with bogus ids and was
+        # rejected by the LMS (the "business validation failure" F-026
+        # originally attributed to seed data). Only `submission` — the
+        # child's actual answer — is the model's to provide. Model args are
+        # kept as a fallback solely for sessions with no resolved identity
+        # (shouldn't happen in this state; the LMS rejects them anyway).
         result = await lms_client.save_submission(
-            call.arguments.get("student_id", ""),
-            call.arguments.get("content_id", ""),
+            session.identity.student_id or call.arguments.get("student_id", ""),
+            (session.content_reference or {}).get("content_id")
+            or call.arguments.get("content_id", ""),
             call.arguments.get("submission", ""),
         )
         return call.name, {"success": result.success, "status": result.status}

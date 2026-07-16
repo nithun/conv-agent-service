@@ -635,3 +635,85 @@ async def test_get_next_content_returning_none_does_not_advance():
 
     assert outcome.advanced_to is None
     assert outcome.session.state == SessionState.CONTENT_INTRO
+
+
+# ---- Identifier authority for LMS tool calls (F-026 root-cause fix) -------
+#
+# The real student_id/content_id are NOT in the system prompt, so a
+# model-supplied value is by construction invented or empty — before this
+# fix every live save_submission went out with bogus ids and was rejected
+# by the LMS (the "business validation failure" F-026 originally blamed on
+# seed data). The SESSION is the identifier authority; the model only owns
+# `submission` (the child's answer).
+
+
+@pytest.mark.asyncio
+async def test_save_submission_uses_session_ids_not_model_supplied_ones():
+    session = _session_at(SessionState.ACTIVITY_IN_PROGRESS)
+    session.content_reference = {
+        "content_id": "REAL-CONTENT-42",
+        "title": "Real lesson",
+        "content_type": "VideoClass",
+    }
+    router = FakeModelRouter(
+        scripted_result=ModelResponse(
+            text="Saving now!",
+            tool_calls=[
+                ToolCall(
+                    name="save_submission",
+                    arguments={
+                        # The model invents ids it cannot know — must be ignored.
+                        "student_id": "HALLUCINATED-ID",
+                        "content_id": "made-up-content",
+                        "submission": "my real answer",
+                    },
+                )
+            ],
+        )
+    )
+    lms = MockTapLmsClient()
+
+    await run_turn(
+        session=session, user_input="I finished!", model_router=router, lms_client=lms
+    )
+
+    assert lms.submissions == [
+        {
+            "student_id": "STU-001",  # from session.identity, not the model
+            "content_id": "REAL-CONTENT-42",  # from session.content_reference
+            "submission": "my real answer",  # the model's to provide
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_next_content_tool_call_uses_session_student_id():
+    session = _session_at(SessionState.CONTENT_INTRO)
+    router = FakeModelRouter(
+        scripted_result=ModelResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    name="get_next_content",
+                    arguments={"student_id": "HALLUCINATED-ID"},
+                )
+            ],
+        )
+    )
+    requested: list[str] = []
+
+    class RecordingLms(MockTapLmsClient):
+        async def get_next_content(self, student_id: str):
+            requested.append(student_id)
+            return await super().get_next_content(student_id)
+
+    await run_turn(
+        session=session, user_input="ready!", model_router=router, lms_client=RecordingLms()
+    )
+
+    # content_intro fires TWO get_next_content calls — the deterministic
+    # prefetch and the model's tool call. The invariant: every one of them
+    # uses the session's student_id; the model's invented id never reaches
+    # the LMS.
+    assert requested and all(sid == "STU-001" for sid in requested)
+    assert "HALLUCINATED-ID" not in requested
