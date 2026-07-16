@@ -5,6 +5,10 @@ FastAPI microservice between Glific (WhatsApp delivery) and TAP LMS/Frappe
 `../CLAUDE.md` / `../docs/architecture.md` in the parent planning workspace
 for system design.
 
+**Integrating a messaging platform** (webhook contract, delivery-client
+interface, what a new channel needs): `docs/INTEGRATION.md`. Glific is the
+reference integration.
+
 Quickstart: `docker compose up --build` then `curl http://localhost:8001/health`.
 
 This brings up **six** containers: `app` (FastAPI ingress, host port 8001 — tap-buddy holds 8000 until the F-019 cutover),
