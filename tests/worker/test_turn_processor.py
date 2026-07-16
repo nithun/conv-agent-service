@@ -366,3 +366,59 @@ async def test_rearm_failure_is_swallowed_not_raised() -> None:
         glific_client=starter,
     )
     assert rearmed is False
+
+
+@pytest.mark.asyncio
+async def test_rearm_skipped_for_an_ORGANICALLY_reached_close_state(session_store) -> None:
+    # Code-review finding 2 (2026-07-16): the CLOSE skip must hold against a
+    # result produced by the REAL process_turn/run_turn pipeline reaching
+    # CLOSE via a successful save_submission — not only against a synthetic
+    # _result_in_state() — the same organic-reachability standard whose
+    # absence let the re-arm call-site gap itself ship (L-011).
+    from app.core.state_machine import StudentIdentity, transition
+    from app.llm.types import ToolCall
+
+    session = new_session("c9", "917834811114", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(student_id="STU-001", child_name="Aarav")
+    session.content_reference = {
+        "content_id": "CONTENT-101",
+        "title": "Creative problem-solving",
+        "content_type": "video",
+    }
+    transition(session, SessionState.MODE_CHOICE)
+    transition(session, SessionState.CONTENT_INTRO)
+    transition(session, SessionState.ACTIVITY_IN_PROGRESS)
+    await session_store.save_session(session)
+
+    class ToolCallingRouter:
+        async def generate(self, route_name, messages, tools=None):
+            return ModelResponse(
+                text="Great work!",
+                tool_calls=[
+                    ToolCall(
+                        name="save_submission",
+                        arguments={
+                            "student_id": "STU-001",
+                            "content_id": "CONTENT-101",
+                            "submission": "done",
+                        },
+                    )
+                ],
+            )
+
+    result = await process_turn(
+        _payload(contact_id="c9", phone="917834811114", text="I finished!"),
+        session_store=session_store,
+        lms_client=MockTapLmsClient(),
+        model_router=ToolCallingRouter(),
+        glific_client=FakeGlificSender(),
+    )
+    assert result.session is not None
+    assert result.session.state == SessionState.CLOSE  # organically reached
+
+    starter = FakeFlowStarter()
+    rearmed = await maybe_rearm_turn_flow(
+        result, _payload(contact_id="c9"), turn_flow_id="26", glific_client=starter
+    )
+    assert rearmed is False
+    assert starter.started == []

@@ -189,3 +189,94 @@ async def test_process_turn_fn_skips_rearm_when_flow_id_unset() -> None:
     await process_turn_fn(payload)
 
     assert glific.started_flows == []
+
+
+@pytest.mark.asyncio
+async def test_process_turn_fn_rearms_even_when_process_turn_raises() -> None:
+    # Code-review finding 1 (2026-07-16): a failing turn must still re-arm
+    # the relay flow (in `finally`) — otherwise a dead-lettered turn strands
+    # the contact with no reply AND no armed flow (the F-019 symptom via an
+    # error path). The exception must still propagate: the consumer loop's
+    # retry/DLQ semantics depend on it.
+    from dataclasses import dataclass, field
+
+    import app.worker.main as worker_main_module
+    from app.ingress.glific_payload import GlificWebhookPayload
+    from app.worker.main import build_process_turn_fn
+    from app.worker.session_store import RedisSessionStore
+
+    @dataclass
+    class FlowOnlyClient:
+        started_flows: list[tuple[str, str]] = field(default_factory=list)
+
+        async def start_contact_flow(self, flow_id: str, contact_id: str) -> bool:
+            self.started_flows.append((flow_id, contact_id))
+            return True
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("model backend down")
+
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    session_store = RedisSessionStore(redis, Settings(_env_file=None))
+    glific = FlowOnlyClient()
+
+    process_turn_fn = build_process_turn_fn(
+        session_store=session_store,
+        lms_client=object(),
+        model_router=object(),
+        glific_client=glific,  # type: ignore[arg-type]
+        turn_flow_id="26",
+    )
+
+    # Patch the module-level process_turn the factory closes over.
+    import unittest.mock
+
+    with unittest.mock.patch.object(worker_main_module, "process_turn", _boom):
+        payload = GlificWebhookPayload(
+            contact_id="9", phone="917834811114", message_id="m-rearm-3", text="hi"
+        )
+        with pytest.raises(RuntimeError, match="model backend down"):
+            await process_turn_fn(payload)
+
+    assert glific.started_flows == [("26", "9")]
+
+
+@pytest.mark.asyncio
+async def test_run_worker_loop_builds_turn_fn_with_settings_flow_id(monkeypatch) -> None:
+    # Code-review suggestion (2026-07-16): entrypoint-level wiring check —
+    # run_worker_loop must construct its per-entry turn function via
+    # build_process_turn_fn with settings.glific_turn_flow_id (symmetry
+    # with the escalation-drain wiring test above).
+    import app.worker.main as worker_main_module
+
+    fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(worker_main_module, "_build_redis_client", lambda settings: fake_redis)
+
+    class _Noop:
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(worker_main_module, "TapLmsClient", lambda *a, **kw: _Noop())
+    monkeypatch.setattr(worker_main_module, "GlificClient", lambda *a, **kw: _Noop())
+    monkeypatch.setattr(worker_main_module, "build_default_model_router", lambda *a, **kw: object())
+
+    flow_id_settings = Settings(_env_file=None, glific_turn_flow_id="26")
+    monkeypatch.setattr(worker_main_module, "get_settings", lambda: flow_id_settings)
+
+    captured: dict[str, object] = {}
+    real_build = worker_main_module.build_process_turn_fn
+
+    def _recording_build(**kwargs):
+        captured.update(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(worker_main_module, "build_process_turn_fn", _recording_build)
+
+    async def _noop_drain(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(worker_main_module, "drain_escalation_stream_once", _noop_drain)
+
+    await worker_main_module.run_worker_loop(max_iterations=1)
+
+    assert captured.get("turn_flow_id") == "26"

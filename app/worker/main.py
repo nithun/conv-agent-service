@@ -86,20 +86,34 @@ def build_process_turn_fn(
     """
 
     async def process_turn_fn(payload: GlificWebhookPayload) -> TurnProcessingResult:
-        result = await process_turn(
-            payload,
-            session_store=session_store,
-            lms_client=lms_client,
-            model_router=model_router,
-            glific_client=glific_client,
-        )
-        await maybe_rearm_turn_flow(
-            result,
-            payload,
-            turn_flow_id=turn_flow_id,
-            glific_client=glific_client,
-        )
-        return result
+        # Re-arm in `finally`, not only on success (code-review finding 1,
+        # 2026-07-16): tap-buddy's `_process_turn` swallows every exception,
+        # so its re-arm ALWAYS fires afterward. Here the exception must keep
+        # propagating — the consumer loop's retry/DLQ semantics depend on it
+        # — but a failing turn still must not strand the contact with no
+        # armed relay flow (the same no-next-message symptom F-019 surfaced,
+        # reached via a processing error instead of a missing call site).
+        # `maybe_rearm_turn_flow` itself never raises, so the original
+        # exception is never masked. Re-arming on an attempt that will be
+        # retried is harmless: the relay flow just parks at its wait node,
+        # and a later re-arm replaces it.
+        result: TurnProcessingResult | None = None
+        try:
+            result = await process_turn(
+                payload,
+                session_store=session_store,
+                lms_client=lms_client,
+                model_router=model_router,
+                glific_client=glific_client,
+            )
+            return result
+        finally:
+            await maybe_rearm_turn_flow(
+                result if result is not None else TurnProcessingResult(handled=False),
+                payload,
+                turn_flow_id=turn_flow_id,
+                glific_client=glific_client,
+            )
 
     return process_turn_fn
 
