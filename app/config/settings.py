@@ -105,6 +105,24 @@ class Settings(BaseSettings):
     media_dir: str = "./data/media"
     media_ttl_seconds: int = 24 * 60 * 60
 
+    # --- Google Speech-to-Text/Text-to-Speech (BR-004 Task 1, worker
+    # container only) ---
+    # No baked default (same discipline as every other credential field):
+    # a real GCP service-account key path. Read BOTH by the Google Cloud
+    # client libraries themselves via this SAME env var name for ADC
+    # discovery (google.auth.default() looks up GOOGLE_APPLICATION_CREDENTIALS
+    # directly from the process environment) AND by this app-level field,
+    # which gates SpeechClient construction
+    # (app/worker/main.py::_build_speech_client) — mirrors tap-buddy's
+    # `_build_speech_client(settings)` pattern
+    # (tap-buddy/src/tap_buddy/main.py:34-39): empty = no speech client is
+    # ever constructed, voice turns degrade gracefully (text-only), never a
+    # bare unguarded SpeechClient() call crashing worker startup via
+    # DefaultCredentialsError. Reuses docker-compose.yml's `worker` service
+    # GCP_SA_KEY_PATH-sourced mount (/secrets/gcp-sa.json) — no second
+    # key-path variable invented.
+    google_application_credentials: str = ""
+
 
 def get_settings() -> Settings:
     """Return a fresh Settings instance (env re-read each call).

@@ -41,12 +41,33 @@ services:
       - .env
     environment:
       REDIS_URL: redis://redis:6379
+      # Google STT/TTS credential wiring (BR-004 Task 1): reuses the SAME
+      # GCP_SA_KEY_PATH .env variable the litellm service already mounts
+      # below — no second key-path variable invented. Empty/unset
+      # GCP_SA_KEY_PATH resolves this to an empty string (via compose's
+      # ${VAR:+alt} interpolation, verified with `docker compose config`),
+      # which is exactly `Settings.google_application_credentials`'s empty
+      # default — `app/worker/main.py::_build_speech_client` gates
+      # SpeechClient() construction on that field being non-empty, so an
+      # unset key never even attempts to construct a client with this
+      # (harmless, placeholder) env value. Voice turns degrade gracefully
+      # (no speech client -> text-only turns, ASR-failure/TTS call sites
+      # simply skip) rather than crashing worker startup via
+      # DefaultCredentialsError.
+      GOOGLE_APPLICATION_CREDENTIALS: ${GCP_SA_KEY_PATH:+/secrets/gcp-sa.json}
     depends_on:
       redis:
         condition: service_healthy
     volumes:
       - ./app:/srv/app
       - ./tests:/srv/tests
+      # Read-only SA key mount, only meaningful once GOOGLE_APPLICATION_CREDENTIALS
+      # (above) is non-empty. Falls back to /dev/null when GCP_SA_KEY_PATH is
+      # unset so `docker compose up` never fails static validation on a
+      # fresh dev box / CI with no GCP secret provisioned yet (unlike
+      # litellm's `:?set in .env` mount below, which intentionally hard-fails
+      # since litellm's whole purpose requires the key).
+      - ${GCP_SA_KEY_PATH:-/dev/null}:/secrets/gcp-sa.json:ro
     command: ["python", "-m", "app.worker.main"]
 
   redis:

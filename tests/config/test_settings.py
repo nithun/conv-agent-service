@@ -32,3 +32,23 @@ def test_settings_reads_endpoints_from_env(monkeypatch) -> None:  # type: ignore
     assert settings.glific_api_url == "http://host.docker.internal:4000"
     assert settings.frappe_api_url == "https://tap-lms.example.org"
     assert settings.redis_url == "redis://redis:6379"
+
+
+def test_google_application_credentials_has_no_baked_default(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # BR-004 Task 1: empty by default (the worker/main.py speech-client gate
+    # relies on this) — no environment-specific value baked into code.
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.google_application_credentials == ""
+
+
+def test_google_application_credentials_round_trips_from_env(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # BR-004 Task 1 AC: round-trips like every other string setting — no
+    # live GCP call in this test, purely an env-plumbing assertion.
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/gcp-sa.json")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.google_application_credentials == "/secrets/gcp-sa.json"
