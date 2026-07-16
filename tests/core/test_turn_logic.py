@@ -854,3 +854,44 @@ async def test_non_quiz_content_never_calls_start_quiz():
     await run_turn(session=session, user_input="I'm confused", model_router=router, lms_client=lms)
 
     assert lms.quiz_starts == []
+
+
+@pytest.mark.asyncio
+async def test_quiz_tool_call_REFUSED_when_no_session_stashed_question_id():
+    # Code-review H2 (2026-07-17): when start_quiz failed (or content isn't
+    # a quiz) there is no stashed active_question_id — the tool call must be
+    # REFUSED, never forwarded with the model's invented id (a question id
+    # has no legitimate model-supplied case, unlike student_id's legacy
+    # fallback).
+    session = _session_at(SessionState.DOUBT_CLEARING)
+    session.content_reference = {
+        "content_id": "CONTENT-101",
+        "title": "Video lesson",
+        "content_type": "VideoClass",  # non-quiz: sourcing block never ran
+        "course_level": "CL-1",
+    }
+    router = FakeModelRouter(
+        scripted_result=ModelResponse(
+            text="Let me check that question.",
+            tool_calls=[
+                ToolCall(
+                    name="get_quiz_question_details",
+                    arguments={"question_id": "HALLUCINATED-QN", "language": "English"},
+                )
+            ],
+        )
+    )
+    reached_lms: list[str] = []
+
+    class RecordingLms(MockTapLmsClient):
+        async def get_quiz_question_details(self, question_id: str, language: str):
+            reached_lms.append(question_id)
+            return await super().get_quiz_question_details(question_id, language)
+
+    outcome = await run_turn(
+        session=session, user_input="what's the answer to question 5",
+        model_router=router, lms_client=RecordingLms(),
+    )
+
+    assert reached_lms == []  # the invented id NEVER reached the LMS
+    assert outcome.reply_text  # turn still replies (fails soft)

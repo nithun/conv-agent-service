@@ -211,16 +211,24 @@ async def _execute_tool_call(
         return call.name, summary
 
     if call.name == "get_quiz_question_details":
-        # Identifier authority (F-028, code-review H-2): the question id
-        # comes from the session's stashed active quiz question (populated
-        # by the deterministic start_quiz block in run_turn), never from
-        # the model — same rule + loud fallback as save_submission below.
+        # Identifier authority (F-028): the question id comes from the
+        # session's stashed active quiz question (populated by the
+        # deterministic start_quiz block in run_turn), never from the
+        # model. UNLIKE student_id (where a model-arg fallback preserves
+        # legacy behavior), a question id has NO legitimate model-supplied
+        # case — so when nothing is stashed (non-quiz content, or
+        # start_quiz failed) the call is REFUSED outright rather than
+        # forwarded (code-review H2, 2026-07-17): a model-invented id must
+        # never reach the LMS.
+        question_id = (session.content_reference or {}).get("active_question_id")
+        if not question_id:
+            logger.warning(
+                "get_quiz_question_details: no session-stashed active_question_id; "
+                "refusing the tool call (model-supplied question ids are never forwarded)"
+            )
+            return call.name, None
         details = await lms_client.get_quiz_question_details(
-            _session_authoritative_id(
-                (session.content_reference or {}).get("active_question_id"),
-                call,
-                "question_id",
-            ),
+            str(question_id),
             session.identity.tap_language or call.arguments.get("language", "English"),
         )
         if details is None:
@@ -357,7 +365,12 @@ async def run_turn(
     # the legacy Glific quiz sub-flow makes) with session-sourced ids;
     # quiz_id IS the quiz-type content's content_id (live-verified,
     # ANSWERS-TAPLMS-2026-07-17 Q3). The result is stashed on the session
-    # so repeat doubt turns never re-call it.
+    # so repeat doubt turns never re-call it. Crash-retry safety
+    # (code-review H1, 2026-07-17): if the session save after this turn
+    # fails and the consumer loop retries, the duplicate call is HARMLESS —
+    # live-verified 2026-07-17 against ST00491459: a second start_quiz for
+    # an in-progress attempt returns status "quiz_resumed" with the SAME
+    # attempt id + current question, not a new attempt.
     if (
         session.state == SessionState.DOUBT_CLEARING
         and session.content_reference
