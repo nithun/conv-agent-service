@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -42,22 +43,41 @@ async def download_media(url: str, *, timeout: float = 15.0) -> bytes:
         return resp.content
 
 
+@dataclass(frozen=True)
+class InboundTranscription:
+    """Raw ASR outcome for one inbound voice note.
+
+    `transcript` is the RAW best-effort text — it may be NON-EMPTY even when
+    `low_confidence` is True. This is deliberate (live-caught 2026-07-17,
+    BR-004 Task 10): a distress utterance transcribed at 0.49 confidence
+    must still reach the worker-side distress gate — safety checks run on
+    best-effort text; only CONVERSATION logic gates on `low_confidence`.
+    Callers must never feed a low-confidence transcript into the state
+    machine/LLM path.
+    """
+
+    transcript: str
+    low_confidence: bool
+
+
 async def transcribe_inbound_media(
     media_url: str, session: SessionData | None, speech_client: _SpeechClient
-) -> str:
+) -> InboundTranscription:
     """Downloads a voice-note media URL and runs it through the ASR
-    wrapper, using the session's resolved language. Returns the transcript
-    string (empty string on low confidence — caller decides whether to
-    trigger the clarification path via `app.core` turn logic's ASR-failure
-    counter, once Task 7 lands).
+    wrapper, using the session's resolved language. Returns the raw
+    transcript + confidence verdict — see `InboundTranscription` for the
+    safety-first contract (the transcript is preserved even when
+    low-confidence, for the distress gate; it previously returned "" and
+    the discarded text was live-caught hiding a spoken distress cry from
+    the gate).
     """
     audio_bytes = await download_media(media_url)
     tap_language = session.identity.tap_language if session else None
     locale = resolve_locale(tap_language)
     result = speech_client.transcribe(audio_bytes, locale)
-    if result.low_confidence:
-        return ""
-    return result.transcript
+    return InboundTranscription(
+        transcript=result.transcript.strip(), low_confidence=result.low_confidence
+    )
 
 
 def _media_token() -> str:

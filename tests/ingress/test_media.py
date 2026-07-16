@@ -51,18 +51,21 @@ async def test_transcribe_inbound_media_reaches_turn_entrypoint_identically_to_t
     fake_speech_client = MagicMock()
     fake_speech_client.transcribe.return_value = AsrResult(transcript="I'm okay", confidence=0.9)
 
-    transcript = await transcribe_inbound_media(
+    result = await transcribe_inbound_media(
         "http://glific.test/media/note.ogg", session, fake_speech_client
     )
-    # The transcript is a plain string — identical shape to a text message's
-    # payload.text, so the worker's turn entrypoint needs no branching.
-    assert transcript == "I'm okay"
-    assert isinstance(transcript, str)
+    # A confident transcript flows into the turn path as plain text.
+    assert result.transcript == "I'm okay"
+    assert result.low_confidence is False
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_transcribe_low_confidence_returns_empty() -> None:
+async def test_transcribe_low_confidence_preserves_raw_transcript() -> None:
+    # Safety-first contract (live-caught 2026-07-17, BR-004 Task 10): the
+    # RAW transcript is preserved even when low-confidence, so the worker's
+    # distress gate can inspect it; only conversation logic gates on the
+    # low_confidence flag.
     respx.get("http://glific.test/media/note.ogg").mock(
         return_value=httpx.Response(200, content=b"mumble-bytes")
     )
@@ -70,12 +73,15 @@ async def test_transcribe_low_confidence_returns_empty() -> None:
     session.identity = StudentIdentity(tap_language="English")
 
     fake_speech_client = MagicMock()
-    fake_speech_client.transcribe.return_value = AsrResult(transcript="", confidence=0.1)
+    fake_speech_client.transcribe.return_value = AsrResult(
+        transcript="someone is hitting me", confidence=0.49
+    )
 
-    transcript = await transcribe_inbound_media(
+    result = await transcribe_inbound_media(
         "http://glific.test/media/note.ogg", session, fake_speech_client
     )
-    assert transcript == ""
+    assert result.low_confidence is True
+    assert result.transcript == "someone is hitting me"  # raw text preserved
 
 
 @pytest.mark.asyncio

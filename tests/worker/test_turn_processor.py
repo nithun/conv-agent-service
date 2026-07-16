@@ -1025,3 +1025,45 @@ def test_process_turn_module_call_graph_reaches_every_br_004_call_site() -> None
         "send_audio",
     ):
         assert symbol in called, f"{symbol} is not called anywhere in turn_processor.py"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_LOW_CONFIDENCE_distress_bearing_transcript_still_escalates(session_store) -> None:
+    # THE live-caught case (2026-07-17, BR-004 Task 10 first run): the real
+    # distress clip transcribed at confidence 0.49 — one hundredth under the
+    # 0.5 bar — and the transcript was discarded before the distress gate
+    # ever saw it ("say it again" instead of escalation). Safety-first
+    # contract: distress runs on the RAW transcript even when
+    # low-confidence; the ASR-failure clarification path only handles
+    # non-distress low-confidence turns.
+    respx.get(AUDIO_MEDIA_URL).mock(return_value=Response(200, content=b"real-ogg-bytes"))
+    from app.core.state_machine import StudentIdentity, new_session
+
+    session = new_session("a9", "917834811114", needs_identity_confirmation=True)
+    session.identity = StudentIdentity(tap_language="English")
+    await session_store.save_session(session)
+
+    glific = FakeGlificSender()
+    speech = ScriptedSpeechClient(
+        transcribe_results=[
+            AsrResult(transcript="someone at home keeps hitting me", confidence=0.49)
+        ]
+    )
+
+    result = await process_turn(
+        _audio_payload(contact_id="a9"),
+        session_store=session_store,
+        lms_client=MockTapLmsClient(),
+        model_router=FakeModelRouter(),
+        glific_client=glific,
+        speech_client=speech,
+    )
+
+    assert result.escalated is True
+    assert result.escalation_reason == EscalationReason.DISTRESS
+    # It must be the DISTRESS surface, not the ASR clarification reply.
+    assert result.session is not None
+    assert result.session.asr_failure_count == 0  # not counted as an ASR failure
+    assert glific.sent_texts, "comfort reply must be sent"
+    assert "catch that" not in glific.sent_texts[-1][1]  # not the ASR clarification

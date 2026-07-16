@@ -1,15 +1,18 @@
 """Turn-processing entrypoint (CR-004 Task 7/8): the worker-side
 counterpart to tap-buddy's `adapters/glific_webhook.py::_process_turn`.
 
-Per Invariant 4/BR-003 (AC-9), the PRIMARY distress check runs at ingress
-(`app/ingress/glific_webhook.py`), BEFORE this entrypoint is ever reached —
-a distress-flagged message never gets enqueued for normal processing at
-all. This module's own `detect_distress` call inside `run_turn` (via
-`app/core/turn_logic.py`) remains as defense-in-depth for turns that DO
-reach the state machine (activity_in_progress, doubt_clearing, etc.),
-mirroring tap-buddy's "PRIMARY check at ingress + backstop inside
-run_turn" shape exactly — this entrypoint does not re-implement a THIRD
-distress check; the layering is deliberate, not redundant.
+Distress-gate layering (Invariant 4/BR-003 AC-9 + BR-004 Task 3 — the
+two-gate-by-modality shape recorded in AD-002, 2026-07-17): for TEXT turns
+the PRIMARY check runs at ingress (`app/ingress/glific_webhook.py`), before
+this entrypoint is ever reached, and this module adds no second text check.
+For AUDIO turns the transcript does not exist until this worker transcribes
+it (transcription is forbidden on the fast-ack path, L-002), so the PRIMARY
+check for voice runs HERE, on the raw best-effort transcript — even a
+low-confidence one — before any state handling, via the same
+`_escalate_for_distress` surface the ingress gate uses. `run_turn`'s own
+`detect_distress` call remains as defense-in-depth for turns that reach the
+state machine. The layering is deliberate, not redundant — do not
+"simplify" either gate away.
 
 Every state-branch reachable here (identity_confirmation, greeting,
 mode_choice, and the run_turn-driven states) is deterministic/structural —
@@ -172,8 +175,9 @@ async def process_turn(
         transcript = ""
         low_confidence = False
         if speech_client is not None:
-            transcript = await transcribe_inbound_media(media_url, session, speech_client)
-            low_confidence = not transcript
+            transcription = await transcribe_inbound_media(media_url, session, speech_client)
+            transcript = transcription.transcript
+            low_confidence = transcription.low_confidence
         else:
             # No speech client configured (credentials absent, Task 1's
             # gate) — cannot transcribe at all. Degrade gracefully: proceed
@@ -182,6 +186,36 @@ async def process_turn(
             # asr_failure_count (there's nothing to attribute a genuine ASR
             # failure to when ASR never ran).
             low_confidence = True
+
+        # SAFETY FIRST (live-caught 2026-07-17, BR-004 Task 10): the
+        # distress check runs on ANY non-empty transcript — INCLUDING a
+        # low-confidence one — BEFORE the clarification path discards it. A
+        # spoken distress cry transcribed at 0.49 confidence (the live
+        # repro: threshold is 0.5) must escalate, not get "say it again";
+        # children's speech in noisy homes is routinely below the bar.
+        # Over-escalation on a garbled transcript is the safe failure
+        # direction — tickets land in a human-reviewed queue. Conversation
+        # logic below still only ever consumes a CONFIDENT transcript.
+        if transcript and detect_distress(
+            transcript, session.identity.tap_language if session else None
+        ):
+            if session is None:
+                session = new_session(
+                    payload.contact_id, payload.phone, needs_identity_confirmation=False
+                )
+            await _escalate_for_distress(
+                session,
+                payload.contact_id,
+                session_store=session_store,
+                glific_client=glific_client,
+            )
+            return TurnProcessingResult(
+                handled=True,
+                escalated=True,
+                escalation_reason=EscalationReason.DISTRESS,
+                session=session,
+                reply_sent=True,
+            )
 
         if not low_confidence:
             user_text = transcript
@@ -207,34 +241,6 @@ async def process_turn(
                 handled=True,
                 escalated=should_fallback,
                 escalation_reason=session.escalation_reason if should_fallback else None,
-                session=session,
-                reply_sent=True,
-            )
-
-        # Worker-side distress check (Task 3, child-safety/BLOCKING tier):
-        # runs on the RESOLVED transcript only (empty/low-confidence
-        # transcripts have nothing to check) — this is the audio-turn
-        # counterpart to the ingress-level gate, which structurally cannot
-        # see a transcript that doesn't exist yet at webhook-receipt time.
-        # Reuses the SAME escalation surface as that gate
-        # (`distress_gate._escalate_for_distress`), never a new path.
-        if user_text and detect_distress(
-            user_text, session.identity.tap_language if session else None
-        ):
-            if session is None:
-                session = new_session(
-                    payload.contact_id, payload.phone, needs_identity_confirmation=False
-                )
-            await _escalate_for_distress(
-                session,
-                payload.contact_id,
-                session_store=session_store,
-                glific_client=glific_client,
-            )
-            return TurnProcessingResult(
-                handled=True,
-                escalated=True,
-                escalation_reason=EscalationReason.DISTRESS,
                 session=session,
                 reply_sent=True,
             )
