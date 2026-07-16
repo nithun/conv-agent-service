@@ -205,13 +205,23 @@ async def _execute_tool_call(
             "content_id": content.content_id,
             "title": content.title,
             "content_type": content.content_type,
+            "course_level": content.raw.get("course_level", ""),
         }
         session.content_reference = summary
         return call.name, summary
 
     if call.name == "get_quiz_question_details":
+        # Identifier authority (F-028, code-review H-2): the question id
+        # comes from the session's stashed active quiz question (populated
+        # by the deterministic start_quiz block in run_turn), never from
+        # the model — same rule + loud fallback as save_submission below.
         details = await lms_client.get_quiz_question_details(
-            call.arguments.get("question_id", ""), call.arguments.get("language", "English")
+            _session_authoritative_id(
+                (session.content_reference or {}).get("active_question_id"),
+                call,
+                "question_id",
+            ),
+            session.identity.tap_language or call.arguments.get("language", "English"),
         )
         if details is None:
             return call.name, None
@@ -330,11 +340,50 @@ async def run_turn(
                 "content_id": content.content_id,
                 "title": content.title,
                 "content_type": content.content_type,
+                # course_level rides along for start_quiz (F-028) — quiz-type
+                # content needs it as an argument.
+                "course_level": content.raw.get("course_level", ""),
             }
             session.content_reference = summary
             tool_names.append("get_next_content")
             tool_summaries.append(f"get_next_content -> {summary}")
             advance_eligible.append("get_next_content")  # prefetch path is success-gated above
+
+    # Deterministic quiz-question sourcing (F-028): entering doubt_clearing
+    # on QUIZ-type content needs an authoritative question_id — the model
+    # cannot know it (not in the prompt; the identifier-authority rule).
+    # `start_quiz` is called ONCE per quiz (it is NOT a pure read: it
+    # creates/resumes the StudentQuizAttempt server-side — the same call
+    # the legacy Glific quiz sub-flow makes) with session-sourced ids;
+    # quiz_id IS the quiz-type content's content_id (live-verified,
+    # ANSWERS-TAPLMS-2026-07-17 Q3). The result is stashed on the session
+    # so repeat doubt turns never re-call it.
+    if (
+        session.state == SessionState.DOUBT_CLEARING
+        and session.content_reference
+        and str(session.content_reference.get("content_type", "")).lower() == "quiz"
+        and not session.content_reference.get("active_question_id")
+    ):
+        try:
+            quiz = await lms_client.start_quiz(
+                session.identity.student_id,
+                str(session.content_reference.get("course_level") or ""),
+                str(session.content_reference.get("content_id") or ""),
+            )
+        except LmsApiError as exc:
+            logger.warning("start_quiz failed: %s", exc)
+            quiz = None
+        if quiz is not None and quiz.question_id:
+            session.content_reference["active_question_id"] = quiz.question_id
+            session.content_reference["quiz_attempt_id"] = quiz.quiz_attempt_id
+            tool_names.append("start_quiz")
+            # Only answer-safe fields ever reach the model (the client has
+            # already scrubbed correct_option* from the stored raw).
+            tool_summaries.append(
+                "start_quiz -> "
+                f"{{'question_id': {quiz.question_id!r}, "
+                f"'question_text': {quiz.question_text!r}}}"
+            )
 
     system_prompt = build_system_prompt(
         child_name=session.identity.child_name or "there",

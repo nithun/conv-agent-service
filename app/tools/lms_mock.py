@@ -9,6 +9,7 @@ from __future__ import annotations
 from app.tools.lms_client import (
     ContentReference,
     QuizQuestionDetails,
+    QuizStartResult,
     StudentCandidate,
     StudentLookupResult,
     SubmissionResult,
@@ -64,7 +65,7 @@ DEFAULT_FIXTURE_QUIZ_QUESTIONS: dict[str, QuizQuestionDetails] = {
 
 
 class MockTapLmsClient:
-    """Fixture-backed stand-in for TapLmsClient. All 4 methods async to match
+    """Fixture-backed stand-in for TapLmsClient. All 5 methods async to match
     the real client's interface.
     """
 
@@ -80,6 +81,7 @@ class MockTapLmsClient:
             quiz_questions if quiz_questions is not None else dict(DEFAULT_FIXTURE_QUIZ_QUESTIONS)
         )
         self.submissions: list[dict[str, str]] = []
+        self.quiz_starts: list[dict[str, str]] = []
 
     async def aclose(self) -> None:
         return None
@@ -94,6 +96,21 @@ class MockTapLmsClient:
 
     async def get_next_content(self, student_id: str) -> ContentReference | None:
         return self.content.get(student_id)
+
+    async def start_quiz(
+        self, student_id: str, course_level: str, quiz_id: str
+    ) -> QuizStartResult | None:
+        self.quiz_starts.append(
+            {"student_id": student_id, "course_level": course_level, "quiz_id": quiz_id}
+        )
+        return QuizStartResult(
+            quiz_attempt_id="ATTEMPT-001",
+            question_id="Q-201",
+            question_text="What helps a small idea grow?",
+            options=["Saving money", "Ignoring it", "Spending fast", "Giving up"],
+            total_questions=3,
+            raw={"status": "quiz_started", "question_index": 1},
+        )
 
     async def get_quiz_question_details(
         self, question_id: str, language: str

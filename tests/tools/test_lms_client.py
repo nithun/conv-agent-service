@@ -270,10 +270,13 @@ async def test_get_next_content_with_token_unknown_student_not_found_shape():
     assert content is None
 
 
-def test_client_has_exactly_four_public_methods_no_scope_creep():
+def test_client_has_exactly_five_public_methods_no_scope_creep():
     """Guards against scope creep: no InteractionLog writes, no new
-    whitelisted APIs — the client's public surface is exactly these 4
-    methods (+ aclose for lifecycle).
+    whitelisted APIs — the client's public surface is exactly these 5
+    methods (+ aclose for lifecycle). `start_quiz` joined 2026-07-17 under
+    F-028 (nithun-directed design; provisionally registered by the
+    tap-lms-frappe station, [[ANSWERS-TAPLMS-2026-07-17]] Q3, formal
+    registration folds into CR-031). A 6th requires a PRD/CR.
     """
     public_methods = {
         name
@@ -285,6 +288,91 @@ def test_client_has_exactly_four_public_methods_no_scope_creep():
         "get_next_content",
         "get_quiz_question_details",
         "save_submission",
+        "start_quiz",
         "aclose",
     }
     assert public_methods == expected
+
+
+# ---- start_quiz (F-028, 5th endpoint) + answer-leak scrubbing --------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_start_quiz_parses_live_shape_and_scrubs_the_answer_leak() -> None:
+    # Fixture mirrors the LIVE response shape from ANSWERS-TAPLMS-2026-07-17
+    # Q3 — including the live-confirmed correct_option leak, which must
+    # never be stored client-side (CR-031's server fix is parked).
+    respx.post(f"{BASE_URL}/api/method/tap_lms.summer_program.student_progression_sp.start_quiz").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "success": True,
+                "status": "quiz_started",
+                "quiz_attempt_id": "SQA-0001",
+                "question_index": 1,
+                "question_id": "Can a loan start your business? \U0001f4bcQN821599",
+                "question_text": "What is a loan?",
+                "option_a": "Borrowed money",
+                "option_b": "A gift",
+                "option_c": "A tax",
+                "option_d": "A fine",
+                "correct_option": "a",
+                "correct_option_text": "Borrowed money",
+                "total_questions": 3,
+                "passing_score": 2,
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "k")
+    result = await client.start_quiz("ST00491459", "Smart Savings-Financial Literacy-Level 2",
+                                     "Can a loan start your business? \U0001f4bc-Basic")
+    await client.aclose()
+
+    assert result is not None
+    assert result.question_id.endswith("QN821599")
+    assert result.quiz_attempt_id == "SQA-0001"
+    assert result.options == ["Borrowed money", "A gift", "A tax", "A fine"]
+    assert result.total_questions == 3
+    # THE guard: the answer key exists nowhere on the result object.
+    assert not hasattr(result, "correct_option")
+    assert "correct_option" not in result.raw
+    assert "correct_option_text" not in result.raw
+    assert "Borrowed money" == result.options[0]  # options themselves are fine
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_start_quiz_business_failure_returns_none() -> None:
+    respx.post(f"{BASE_URL}/api/method/tap_lms.summer_program.student_progression_sp.start_quiz").mock(
+        return_value=httpx.Response(200, json={"success": False, "status": "quiz_not_found"})
+    )
+    client = TapLmsClient(BASE_URL, "k")
+    assert await client.start_quiz("ST-X", "CL-X", "no-such-quiz") is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_quiz_question_details_raw_is_scrubbed_of_correct_option() -> None:
+    respx.post(f"{BASE_URL}/api/method/tap_lms.api.get_quiz_question_details").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "message": {
+                    "question_text": "What is a loan?",
+                    "hint": "Think about borrowing.",
+                    "options": ["a", "b"],
+                    "correct_option": "a",
+                    "correct_option_text": "Borrowed money",
+                }
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "k")
+    details = await client.get_quiz_question_details("Q-1", "English")
+    await client.aclose()
+    assert details is not None
+    assert "correct_option" not in details.raw
+    assert "correct_option_text" not in details.raw
+    assert details.hint == "Think about borrowing."

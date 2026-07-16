@@ -765,3 +765,92 @@ async def test_save_submission_fallback_to_model_ids_is_loud_not_silent(caplog):
         r for r in caplog.records if "no authoritative" in r.getMessage()
     ]
     assert len(fallback_warnings) == 2
+
+
+# ---- F-028: deterministic quiz-question sourcing via start_quiz -----------
+
+
+def _quiz_session():
+    session = _session_at(SessionState.DOUBT_CLEARING)
+    session.content_reference = {
+        "content_id": "Can a loan start your business? \U0001f4bc-Basic",
+        "title": "",
+        "content_type": "Quiz",
+        "course_level": "Smart Savings-Financial Literacy-Level 2",
+    }
+    return session
+
+
+@pytest.mark.asyncio
+async def test_doubt_on_quiz_content_starts_quiz_once_and_stashes_question_id():
+    session = _quiz_session()
+    router = FakeModelRouter(scripted_result=ModelResponse(text="Here's a hint!"))
+    lms = MockTapLmsClient()
+
+    await run_turn(
+        session=session, user_input="I don't get it", model_router=router, lms_client=lms
+    )
+
+    assert lms.quiz_starts == [
+        {
+            "student_id": "STU-001",  # session-sourced, never model-sourced
+            "course_level": "Smart Savings-Financial Literacy-Level 2",
+            "quiz_id": "Can a loan start your business? \U0001f4bc-Basic",
+        }
+    ]
+    assert session.content_reference["active_question_id"] == "Q-201"
+    assert session.content_reference["quiz_attempt_id"] == "ATTEMPT-001"
+
+    # Second doubt turn: start_quiz must NOT be re-called (not a pure read —
+    # it creates/resumes the server-side attempt).
+    await run_turn(
+        session=session, user_input="still confused", model_router=router, lms_client=lms
+    )
+    assert len(lms.quiz_starts) == 1
+
+
+@pytest.mark.asyncio
+async def test_quiz_tool_call_uses_stashed_question_id_not_model_supplied():
+    session = _quiz_session()
+    session.content_reference["active_question_id"] = "Q-201"  # already sourced
+    router = FakeModelRouter(
+        scripted_result=ModelResponse(
+            text="Hint coming.",
+            tool_calls=[
+                ToolCall(
+                    name="get_quiz_question_details",
+                    arguments={"question_id": "HALLUCINATED-QN", "language": "Klingon"},
+                )
+            ],
+        )
+    )
+    requested: list[tuple[str, str]] = []
+
+    class RecordingLms(MockTapLmsClient):
+        async def get_quiz_question_details(self, question_id: str, language: str):
+            requested.append((question_id, language))
+            return await super().get_quiz_question_details(question_id, language)
+
+    await run_turn(
+        session=session, user_input="what's the answer", model_router=router,
+        lms_client=RecordingLms(),
+    )
+
+    assert requested == [("Q-201", "English")]  # session id + session language won
+
+
+@pytest.mark.asyncio
+async def test_non_quiz_content_never_calls_start_quiz():
+    session = _session_at(SessionState.DOUBT_CLEARING)
+    session.content_reference = {
+        "content_id": "CONTENT-101",
+        "title": "Video lesson",
+        "content_type": "VideoClass",
+        "course_level": "CL-1",
+    }
+    lms = MockTapLmsClient()
+    router = FakeModelRouter(scripted_result=ModelResponse(text="Let me explain again."))
+
+    await run_turn(session=session, user_input="I'm confused", model_router=router, lms_client=lms)
+
+    assert lms.quiz_starts == []
