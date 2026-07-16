@@ -162,6 +162,27 @@ def _tool_call_succeeded(name: str, summary: dict[str, Any] | None) -> bool:
     return True
 
 
+def _session_authoritative_id(
+    session_value: str | None, call: ToolCall, arg_key: str
+) -> str:
+    """Identifier authority (F-026): the session's value wins; the model's
+    argument is a last-resort fallback that must never be silent (code-review
+    H-1, 2026-07-16) — a silent fallback would reproduce F-026's exact
+    symptom (invented ids rejected by the LMS) with no signal pointing at
+    the cause if a state-machine regression ever left the session value
+    empty.
+    """
+    if session_value:
+        return session_value
+    logger.warning(
+        "%s: session has no authoritative %s; falling back to the "
+        "model-supplied argument (F-026 class — expect the LMS to reject it)",
+        call.name,
+        arg_key,
+    )
+    return str(call.arguments.get(arg_key, ""))
+
+
 async def _execute_tool_call(
     call: ToolCall, session: SessionData, lms_client: Any
 ) -> tuple[str, dict[str, Any] | None]:
@@ -176,7 +197,7 @@ async def _execute_tool_call(
         # the arguments (the deterministic content_intro prefetch already
         # uses the session id; this aligns the model-tool path with it).
         content = await lms_client.get_next_content(
-            session.identity.student_id or call.arguments.get("student_id", "")
+            _session_authoritative_id(session.identity.student_id, call, "student_id")
         )
         if content is None:
             return call.name, None
@@ -206,13 +227,14 @@ async def _execute_tool_call(
         # save_submission before this fix went out with bogus ids and was
         # rejected by the LMS (the "business validation failure" F-026
         # originally attributed to seed data). Only `submission` — the
-        # child's actual answer — is the model's to provide. Model args are
-        # kept as a fallback solely for sessions with no resolved identity
-        # (shouldn't happen in this state; the LMS rejects them anyway).
+        # child's actual answer — is the model's to provide. The fallback to
+        # model args (sessions with no resolved identity — shouldn't happen
+        # in this state) logs loudly via _session_authoritative_id (H-1).
         result = await lms_client.save_submission(
-            session.identity.student_id or call.arguments.get("student_id", ""),
-            (session.content_reference or {}).get("content_id")
-            or call.arguments.get("content_id", ""),
+            _session_authoritative_id(session.identity.student_id, call, "student_id"),
+            _session_authoritative_id(
+                (session.content_reference or {}).get("content_id"), call, "content_id"
+            ),
             call.arguments.get("submission", ""),
         )
         return call.name, {"success": result.success, "status": result.status}

@@ -717,3 +717,51 @@ async def test_get_next_content_tool_call_uses_session_student_id():
     # the LMS.
     assert requested and all(sid == "STU-001" for sid in requested)
     assert "HALLUCINATED-ID" not in requested
+
+
+@pytest.mark.asyncio
+async def test_save_submission_fallback_to_model_ids_is_loud_not_silent(caplog):
+    # Code-review H-1 (2026-07-16): if a state-machine regression ever
+    # leaves the session without its authoritative ids, the fallback to the
+    # model's (invented) arguments must WARN — a silent fallback reproduces
+    # F-026's symptom with no signal pointing at the cause.
+    import logging
+
+    session = _session_at(SessionState.ACTIVITY_IN_PROGRESS)
+    session.identity = StudentIdentity(student_id="", child_name="Aarav")  # regression sim
+    session.content_reference = None
+    router = FakeModelRouter(
+        scripted_result=ModelResponse(
+            text="Saving!",
+            tool_calls=[
+                ToolCall(
+                    name="save_submission",
+                    arguments={
+                        "student_id": "MODEL-GUESS",
+                        "content_id": "MODEL-GUESS-CONTENT",
+                        "submission": "answer",
+                    },
+                )
+            ],
+        )
+    )
+    lms = MockTapLmsClient()
+
+    with caplog.at_level(logging.WARNING, logger="app.core.turn_logic"):
+        await run_turn(
+            session=session, user_input="done!", model_router=router, lms_client=lms
+        )
+
+    # Fallback used (model ids reached the mock)...
+    assert lms.submissions == [
+        {
+            "student_id": "MODEL-GUESS",
+            "content_id": "MODEL-GUESS-CONTENT",
+            "submission": "answer",
+        }
+    ]
+    # ...and it was LOUD: one warning per missing authoritative id.
+    fallback_warnings = [
+        r for r in caplog.records if "no authoritative" in r.getMessage()
+    ]
+    assert len(fallback_warnings) == 2
