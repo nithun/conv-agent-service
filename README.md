@@ -9,6 +9,10 @@ for system design.
 interface, what a new channel needs): `docs/INTEGRATION.md`. Glific is the
 reference integration.
 
+**Authoring Glific flows against this service** (flow-side API doc for a
+flow-creation agent: scenario catalog S1-S5, the real sample flow JSONs,
+authoring checklist, live-verified pitfalls): `docs/GLIFIC-FLOW-INTEGRATION.md`.
+
 Quickstart: `docker compose up --build` then `curl http://localhost:8001/health`.
 
 This brings up **six** containers: `app` (FastAPI ingress, host port 8001 — tap-buddy holds 8000 until the F-019 cutover),
