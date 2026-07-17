@@ -47,6 +47,7 @@ from app.config.settings import Settings
 from app.core.guardrails_checks import detect_distress
 from app.core.identity import confirm_identity, resolve_identity_by_name
 from app.core.state_machine import (
+    MAX_LANGUAGE_CHOICE_ATTEMPTS,
     EscalationReason,
     SessionData,
     SessionState,
@@ -308,7 +309,29 @@ async def process_turn(
         # contact (tap_language truthy -> straight to GREETING, exactly
         # today's behavior).
         if not session.identity.tap_language:
-            session.state = SessionState.LANGUAGE_CHOICE
+            # Code-review fix (2026-07-17 Medium finding): use transition()
+            # here, consistently with the sibling multi-candidate-confirm
+            # branch below (line ~336-ish), instead of assigning
+            # session.state directly. Root cause of the prior direct
+            # assignment: `resolve_identity_by_name`'s single-match path
+            # builds `session` via `new_session(..., needs_identity_confirmation=False)`,
+            # which pre-sets state=GREETING — GREETING -> LANGUAGE_CHOICE is
+            # not an allowed edge (`_ALLOWED_TRANSITIONS`), so a literal
+            # transition() call would have raised InvalidTransition. This
+            # branch IS still identity resolution in progress (GAP 0's
+            # language ask is a continuation of it, not a new state), so
+            # state is first restored to IDENTITY_CONFIRMATION — the state
+            # this session was actually in when the outer `if` above
+            # matched — before the validated transition.
+            # Behavior change confirmed bounded to turn_count: this now
+            # bumps turn_count by 1 (transition()'s side effect), where the
+            # direct assignment previously left it at 0. turn_count has no
+            # other reader anywhere in this codebase (grep-confirmed
+            # against app/ and tests/) — this only brings the single-match
+            # branch in line with the multi-candidate-confirm branch, which
+            # already bumps turn_count for the identical target state.
+            session.state = SessionState.IDENTITY_CONFIRMATION
+            transition(session, SessionState.LANGUAGE_CHOICE)
             await session_store.save_session(session)
             await glific_client.send_text(payload.contact_id, language_choice_prompt())
             return TurnProcessingResult(handled=True, session=session, reply_sent=True)
@@ -371,7 +394,28 @@ async def process_turn(
             await glific_client.send_text(payload.contact_id, reply)
             return TurnProcessingResult(handled=True, session=session, reply_sent=True)
 
-        if record_language_choice_attempt(session):
+        # Retry-safety (code review 2026-07-17 High finding): a transient
+        # send_text failure below (the re-ask or the English-default reply)
+        # can leave the session's state unchanged (LANGUAGE_CHOICE, on the
+        # re-ask branch) or already saved-past-this-point (on the
+        # cap-exceeded branch) while the exception still propagates —
+        # `process_turn`'s caller (`app/worker/consumer_loop.py`) then
+        # redelivers the SAME still-pending stream entry, re-running this
+        # whole branch for the SAME `payload.message_id`. Without a guard,
+        # `record_language_choice_attempt` would double-count that ONE real
+        # user reply and silently skip the promised one-time re-ask.
+        # `language_choice_last_message_id` tracks which inbound message
+        # this session has already counted an attempt for; redelivery of
+        # that same message_id re-derives the prior cap verdict instead of
+        # incrementing again. A genuinely different message_id (the child's
+        # actual next reply) still increments normally.
+        if session.language_choice_last_message_id == payload.message_id:
+            exceeded_cap = session.language_choice_attempts > MAX_LANGUAGE_CHOICE_ATTEMPTS
+        else:
+            exceeded_cap = record_language_choice_attempt(session)
+            session.language_choice_last_message_id = payload.message_id
+
+        if exceeded_cap:
             logger.warning(
                 "language_choice: no match after %d unmatched repl%s for contact=%s; "
                 "defaulting to English",

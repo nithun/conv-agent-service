@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 import fakeredis.aioredis
 import pytest
@@ -60,6 +61,23 @@ class FakeGlificSender:
 
 
 @dataclass
+class FlakyGlificSender(FakeGlificSender):
+    """`FakeGlificSender` that raises on `send_text` for the next
+    `fail_remaining` calls — simulates the transient send failure the
+    2026-07-17 code review's High finding reproduced (redelivery of a job
+    whose reply-send raised mid-turn).
+    """
+
+    fail_remaining: int = 0
+
+    async def send_text(self, receiver_id: str, body_text: str) -> dict[str, str]:
+        if self.fail_remaining > 0:
+            self.fail_remaining -= 1
+            raise RuntimeError("simulated transient send_text failure")
+        return await super().send_text(receiver_id, body_text)
+
+
+@dataclass
 class FakeModelRouter:
     scripted_text: str = "Great job!"
 
@@ -78,7 +96,14 @@ def _payload(**kwargs) -> GlificWebhookPayload:
     defaults = {
         "contact_id": "1",
         "phone": "917834811114",
-        "message_id": "m1",
+        # Code review fix (2026-07-17): a unique default per call, not a
+        # fixed "m1", mirroring real traffic (every distinct inbound Glific
+        # message carries its own message_id — see app/ingress/glific_payload.py's
+        # own uuid4 fallback) and the real behavior now that
+        # language_choice_last_message_id makes the LANGUAGE_CHOICE branch
+        # message_id-sensitive. A test simulating an actual retry/redelivery
+        # passes an explicit `message_id=` to reuse the same one on purpose.
+        "message_id": uuid4().hex,
         "text": "hello",
     }
     defaults.update(kwargs)
@@ -92,7 +117,7 @@ def _audio_payload(**kwargs) -> GlificWebhookPayload:
     defaults = {
         "contact_id": "1",
         "phone": "917834811114",
-        "message_id": "m1",
+        "message_id": uuid4().hex,
         "message_type": "audio",
         "media_url": AUDIO_MEDIA_URL,
         "text": None,
@@ -313,6 +338,207 @@ async def test_language_choice_reasks_once_then_defaults_to_english(session_stor
     assert result2.session.state == SessionState.GREETING
     expected_reply = get_scripted_reply("greeting_direct", "English").format(child_name="Rahim")
     assert glific.sent_texts[-1][1] == expected_reply
+
+
+@pytest.mark.asyncio
+async def test_language_choice_reask_send_failure_then_redelivery_keeps_attempts_at_one(
+    session_store,
+) -> None:
+    """Regression for the 2026-07-17 code review's High finding:
+    reproduces the reviewer's fakeredis repro (a transient `send_text`
+    failure on the LANGUAGE_CHOICE re-ask, followed by job redelivery of
+    the SAME stream entry) and asserts `language_choice_attempts` stays at
+    1 instead of double-counting — the promised one-time re-ask must
+    survive a retry.
+    """
+    from app.config.scripted_replies import get_scripted_reply, language_choice_reask
+    from app.tools.lms_client import StudentCandidate
+
+    glific = FlakyGlificSender()
+    lms = MockTapLmsClient(
+        students={
+            "933333333333": [
+                StudentCandidate(
+                    student_id="STU-102", child_name="Zara", grade="3", tap_language=None
+                )
+            ]
+        }
+    )
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="lc3", phone="933333333333", text="hi", message_id="m1"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    await process_turn(
+        _payload(contact_id="lc3", phone="933333333333", text="Zara", message_id="m2"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    # Arm the simulated transient failure only for the NEXT send_text call
+    # (the language-choice re-ask below) — the setup turns above must
+    # succeed normally.
+    glific.fail_remaining = 1
+
+    # First unmatched reply -> send_text fails (simulated transient error).
+    # `process_turn` propagates the exception, mirroring
+    # `app/worker/consumer_loop.py::process_one_entry`'s failure path (no
+    # ack, no send-guard mark — the entry stays pending for redelivery).
+    with pytest.raises(RuntimeError):
+        await process_turn(
+            _payload(contact_id="lc3", phone="933333333333", text="banana", message_id="m3"),
+            session_store=session_store,
+            lms_client=lms,
+            model_router=router,
+            glific_client=glific,
+        )
+    session_after_failure = await session_store.load_session("lc3")
+    assert session_after_failure is not None
+    assert session_after_failure.state == SessionState.LANGUAGE_CHOICE
+    assert session_after_failure.language_choice_attempts == 1
+    assert session_after_failure.language_choice_last_message_id == "m3"
+
+    # Redelivery: the consumer group re-reads the SAME still-pending stream
+    # entry (identical message_id "m3", identical text) after the
+    # send_text failure above. This must NOT count as a second unmatched
+    # reply — attempts stays at 1, session stays in LANGUAGE_CHOICE.
+    result = await process_turn(
+        _payload(contact_id="lc3", phone="933333333333", text="banana", message_id="m3"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result.session is not None
+    assert result.session.language_choice_attempts == 1
+    assert result.session.state == SessionState.LANGUAGE_CHOICE
+    assert glific.sent_texts[-1][1] == language_choice_reask()
+
+    # A genuinely NEW unmatched reply (a different message_id — the
+    # child's actual next message) still counts normally and hits the cap,
+    # defaulting to English exactly as today's happy-path test expects.
+    result2 = await process_turn(
+        _payload(
+            contact_id="lc3", phone="933333333333", text="still not a language", message_id="m4"
+        ),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result2.session is not None
+    assert result2.session.identity.tap_language == "English"
+    assert result2.session.state == SessionState.GREETING
+    expected_reply = get_scripted_reply("greeting_direct", "English").format(child_name="Zara")
+    assert glific.sent_texts[-1][1] == expected_reply
+
+
+@pytest.mark.asyncio
+async def test_language_choice_redelivery_of_same_message_id_does_not_consume_second_attempt(
+    session_store,
+) -> None:
+    """Direct guard check (code review 2026-07-17 High finding), independent
+    of how the redelivery happened: a LANGUAGE_CHOICE session that already
+    recorded one attempt for message_id "m3" must not bump
+    `language_choice_attempts` again on redelivery of that SAME message_id
+    — only a genuinely different message_id may consume the next attempt.
+    """
+    from app.config.scripted_replies import get_scripted_reply, language_choice_reask
+    from app.core.state_machine import StudentIdentity, new_session
+
+    session = new_session("lc4", "944444444444", needs_identity_confirmation=False)
+    session.state = SessionState.LANGUAGE_CHOICE
+    session.identity = StudentIdentity(student_id="STU-103", child_name="Dev")
+    session.language_choice_attempts = 1
+    session.language_choice_last_message_id = "m3"
+    await session_store.save_session(session)
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    # Redelivery of the SAME message_id "m3" — attempts must stay at 1, not
+    # bump to 2 and wrongly skip straight to the English default.
+    result = await process_turn(
+        _payload(contact_id="lc4", phone="944444444444", text="banana", message_id="m3"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result.session is not None
+    assert result.session.language_choice_attempts == 1
+    assert result.session.state == SessionState.LANGUAGE_CHOICE
+    assert glific.sent_texts[-1][1] == language_choice_reask()
+
+    # A genuinely NEW message_id ("m4") still counts normally and hits the
+    # cap (MAX_LANGUAGE_CHOICE_ATTEMPTS=1), defaulting to English.
+    result2 = await process_turn(
+        _payload(
+            contact_id="lc4",
+            phone="944444444444",
+            text="still not a language",
+            message_id="m4",
+        ),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result2.session is not None
+    assert result2.session.identity.tap_language == "English"
+    assert result2.session.state == SessionState.GREETING
+    expected_reply = get_scripted_reply("greeting_direct", "English").format(child_name="Dev")
+    assert glific.sent_texts[-1][1] == expected_reply
+
+
+@pytest.mark.asyncio
+async def test_single_match_language_choice_entry_uses_transition_and_bumps_turn_count(
+    session_store,
+) -> None:
+    """Code review 2026-07-17 Medium finding: the single-match identity
+    branch entering LANGUAGE_CHOICE now goes through transition() — like
+    the sibling multi-candidate-confirm branch — instead of assigning
+    session.state directly, which validates the edge and bumps turn_count.
+    """
+    from app.tools.lms_client import StudentCandidate
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient(
+        students={
+            "955555555555": [
+                StudentCandidate(
+                    student_id="STU-104", child_name="Ishaan", grade="3", tap_language=None
+                )
+            ]
+        }
+    )
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="lc5", phone="955555555555", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    result = await process_turn(
+        _payload(contact_id="lc5", phone="955555555555", text="Ishaan"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.session is not None
+    assert result.session.state == SessionState.LANGUAGE_CHOICE
+    assert result.session.turn_count == 1
 
 
 @pytest.mark.asyncio

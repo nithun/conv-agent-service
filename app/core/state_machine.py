@@ -131,6 +131,16 @@ class SessionData:
     # before this field existed deserializes it as 0 with no migration
     # needed (mirrors asr_failure_count's existing shape).
     language_choice_attempts: int = 0
+    # Code review fix (2026-07-17 High finding): the `message_id` whose
+    # unmatched reply this session already counted toward
+    # `language_choice_attempts` — makes the increment idempotent per
+    # inbound message. A transient `send_text` failure on the LANGUAGE_CHOICE
+    # branch (state doesn't change on the re-ask path, so a redelivered job
+    # re-enters this same branch) must not double-count ONE real user
+    # reply. Dataclass default None — mirrors `language_choice_attempts`'
+    # own missing-hash-field tolerance for a pre-existing serialized
+    # session hash.
+    language_choice_last_message_id: str | None = None
     readiness_response: str | None = None
     resolved_locale: dict[str, Any] | None = None  # {"stt_locale":..., "tts_voice":...}
     escalation_reason: EscalationReason | None = None
@@ -235,6 +245,13 @@ def record_language_choice_attempt(session: SessionData, *, now: float | None = 
     consecutive-failure-before-fallback threshold: the 1st unmatched reply
     should still get its one scripted re-ask; only the 2nd (exceeding the
     cap of 1) defaults to English.
+
+    Unconditional — this function does not itself know about message-level
+    idempotency. The caller (`app/worker/turn_processor.py`'s LANGUAGE_CHOICE
+    branch) is responsible for only calling this once per distinct
+    `payload.message_id`, via `session.language_choice_last_message_id`
+    (code review fix, 2026-07-17 High finding) — calling this twice for the
+    same inbound message double-counts it.
     """
     session.language_choice_attempts += 1
     session.touch(now)
