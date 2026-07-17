@@ -1,9 +1,12 @@
 """TAP LMS (Frappe) client — the COMPLETE LMS integration surface.
 
 Ported from `tap-buddy/src/tap_buddy/clients/lms_client.py` (CR-004 Task
-12). Exactly 4 whitelisted endpoints. No other method exists on this
-client, and none should ever be added without a corresponding PRD/CR —
-`save_submission` is the ONLY write path (state authority, L-001).
+12). Exactly 5 whitelisted endpoints (`start_quiz` added 2026-07-17 under
+F-028, permanently registered via CR-031/D-8). No other method exists on
+this client, and none should ever be added without a corresponding PRD/CR
+— `save_submission` is the only unconditional write path (state authority,
+L-001); `start_quiz` creates/resumes a quiz attempt (deterministic,
+once-per-quiz, resume-idempotent — see its docstring).
 
 Live-verified dotted paths (tap-buddy/CLAUDE.md, 2026-07-03, against
 lms.evalix.xyz with a real API key — re-verification against THIS stack is
@@ -101,10 +104,12 @@ def _scrub_answer_leak(raw: dict[str, Any]) -> dict[str, Any]:
     The live server LEAKS the answer on FOUR quiz surfaces —
     `get_quiz_question_details`, `start_quiz`, quiz-resume, and
     `submit_answer`'s next-question payload (live-confirmed by the
-    tap-lms-frappe station, [[ANSWERS-TAPLMS-2026-07-17]] Q3/Q4) — and the
-    server-side fix is parked on CR-031/OQ-1. Until that lands, this
-    client-side scrub is the only protection (F-011/F-012 discipline): the
-    answer must never even be STORED on our side, let alone reach a
+    tap-lms-frappe station, [[ANSWERS-TAPLMS-2026-07-17]] Q3/Q4). Decision
+    of record D-7 ([[HANDOVER-TAP-AGENT-2026-07-17]], nithun, 2026-07-17):
+    the answer fields are BY DESIGN (the Glific flow grades inline) and no
+    server-side change is coming — this client-side scrub is therefore the
+    PERMANENT, sanctioned pattern (F-011/F-012 discipline), not a stopgap:
+    the answer must never even be STORED on our side, let alone reach a
     prompt.
     """
     return {k: v for k, v in raw.items() if not k.startswith(_ANSWER_LEAK_KEY_PREFIX)}
@@ -129,9 +134,9 @@ class QuizStartResult:
 class TapLmsClient:
     """The complete TAP LMS integration surface — exactly 5 methods. Do not
     add a 6th without a PRD/CR. (The 5th, `start_quiz`, was added 2026-07-17
-    under F-028 — nithun-directed design, provisionally registered as a
-    shared-endpoint consumer by the tap-lms-frappe station pending CR-031;
-    see [[ANSWERS-TAPLMS-2026-07-17]] Q3.)
+    under F-028 — nithun-directed design; registration made PERMANENT by
+    CR-031's approval, decision D-8, [[HANDOVER-TAP-AGENT-2026-07-17]]:
+    all 5 endpoints are formally registered consumers.)
     """
 
     def __init__(

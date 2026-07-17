@@ -274,9 +274,8 @@ def test_client_has_exactly_five_public_methods_no_scope_creep():
     """Guards against scope creep: no InteractionLog writes, no new
     whitelisted APIs — the client's public surface is exactly these 5
     methods (+ aclose for lifecycle). `start_quiz` joined 2026-07-17 under
-    F-028 (nithun-directed design; provisionally registered by the
-    tap-lms-frappe station, [[ANSWERS-TAPLMS-2026-07-17]] Q3, formal
-    registration folds into CR-031). A 6th requires a PRD/CR.
+    F-028; registration made PERMANENT by CR-031's approval (decision D-8,
+    [[HANDOVER-TAP-AGENT-2026-07-17]]). A 6th requires a PRD/CR.
     """
     public_methods = {
         name
