@@ -118,7 +118,12 @@ async def synthesize_and_store(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(tts_result.audio_bytes)
 
-    return f"{settings.public_base_url.rstrip('/')}/media/{token}"
+    # CR-007 GAP 3: emit the .mp3-suffixed URL — the BSP media fetcher's
+    # extension requirement is unverified (this is the probe), so shipping
+    # the suffix defensively covers the case it's required. The unsuffixed
+    # /media/{token} shape (already-issued URLs) keeps working — see
+    # get_media's suffix-stripping below.
+    return f"{settings.public_base_url.rstrip('/')}/media/{token}.mp3"
 
 
 def cleanup_expired_media(media_dir: str, ttl_seconds: int, *, now: float | None = None) -> int:
@@ -140,7 +145,18 @@ def cleanup_expired_media(media_dir: str, ttl_seconds: int, *, now: float | None
 
 @router.get("/media/{token}")
 async def get_media(token: str) -> Response:
+    """Serves a previously-synthesized voice note. CR-007 GAP 3: accepts
+    BOTH `GET /media/{token}` (backward-compatible — already-issued URLs)
+    and `GET /media/{token}.mp3` (what `synthesize_and_store` emits going
+    forward) — FastAPI's default path-segment matching already routes both
+    shapes to this one handler (a `.` is a legal, non-slash path-segment
+    character), so a trailing `.mp3` is simply stripped before the existing
+    `_media_path`/token-charset validation, resolving both shapes to the
+    identical on-disk file and identical path-traversal defense.
+    """
     settings = get_settings()
+    if token.endswith(".mp3"):
+        token = token[: -len(".mp3")]
     try:
         path = _media_path(settings.media_dir, token)
     except ValueError as exc:

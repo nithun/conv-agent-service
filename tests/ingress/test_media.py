@@ -99,6 +99,8 @@ async def test_synthesize_and_store_produces_media_url(tmp_path) -> None:
 
     url = await synthesize_and_store("Great job!", session, fake_speech_client, settings)
     assert url.startswith("http://localhost:8000/media/")
+    # CR-007 GAP 3: synthesize_and_store now emits a .mp3-suffixed URL.
+    assert url.endswith(".mp3")
 
 
 def test_cleanup_expired_media_deletes_old_files(tmp_path) -> None:
@@ -162,6 +164,86 @@ async def test_media_route_missing_file_returns_404(tmp_path, monkeypatch) -> No
         resp = await client.get("/media/abcdef0123456789abcdef0123456789")
 
     assert resp.status_code == 404
+
+
+# ---- CR-007 GAP 3: .mp3-suffix route parity --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_media_route_mp3_suffix_serves_identical_bytes_to_unsuffixed(
+    tmp_path, monkeypatch
+) -> None:
+    app = _app_with_media_dir(tmp_path, monkeypatch)
+    (tmp_path / "abcdef0123456789abcdef0123456789.mp3").write_bytes(b"fake-audio-bytes")
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        unsuffixed = await client.get("/media/abcdef0123456789abcdef0123456789")
+        suffixed = await client.get("/media/abcdef0123456789abcdef0123456789.mp3")
+
+    assert unsuffixed.status_code == suffixed.status_code == 200
+    assert unsuffixed.content == suffixed.content == b"fake-audio-bytes"
+    assert unsuffixed.headers["content-type"] == suffixed.headers["content-type"] == "audio/mpeg"
+
+
+@pytest.mark.asyncio
+async def test_media_route_mp3_suffix_missing_file_returns_404(tmp_path, monkeypatch) -> None:
+    app = _app_with_media_dir(tmp_path, monkeypatch)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/media/abcdef0123456789abcdef0123456789.mp3")
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_media_route_mp3_suffix_rejects_path_traversal_identically(
+    tmp_path, monkeypatch
+) -> None:
+    app = _app_with_media_dir(tmp_path, monkeypatch)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/media/not-a-hex-token.mp3")
+        assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_synthesize_and_store_url_is_fetchable_via_get_media(tmp_path) -> None:
+    """End-to-end proof (AC-8): the exact URL synthesize_and_store returns
+    resolves through get_media to the same bytes it wrote.
+    """
+    settings = Settings(
+        media_dir=str(tmp_path), public_base_url="http://localhost:8000", _env_file=None
+    )
+    session = new_session("contact-9", "917834811114", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(tap_language="English")
+
+    fake_speech_client = MagicMock()
+    fake_speech_client.synthesize.return_value = TtsResult(
+        audio_bytes=b"fake-mp3-bytes", content_type="audio/mpeg"
+    )
+
+    url = await synthesize_and_store("Great job!", session, fake_speech_client, settings)
+    token_with_suffix = url.rsplit("/media/", 1)[1]
+    assert token_with_suffix.endswith(".mp3")
+
+    app = FastAPI()
+    app.include_router(media_router)
+    import app.ingress.media as media_module
+
+    original_get_settings = media_module.get_settings
+    media_module.get_settings = lambda: settings  # type: ignore[assignment]
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(f"/media/{token_with_suffix}")
+    finally:
+        media_module.get_settings = original_get_settings  # type: ignore[assignment]
+
+    assert resp.status_code == 200
+    assert resp.content == b"fake-mp3-bytes"
 
 
 @pytest.mark.asyncio
