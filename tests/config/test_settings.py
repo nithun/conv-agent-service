@@ -52,3 +52,27 @@ def test_google_application_credentials_round_trips_from_env(monkeypatch) -> Non
     settings = Settings(_env_file=None)
 
     assert settings.google_application_credentials == "/secrets/gcp-sa.json"
+
+
+def test_environment_has_no_baked_local_default(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    # CR-009 (webhook auth) architecture-reviewer CONDITION 2, BLOCKING: an
+    # unset ENVIRONMENT env var must resolve to "" — NOT "local" — so a
+    # `.env` missing an `ENVIRONMENT=` line (e.g. copied from a stale
+    # .env.example) cannot silently qualify for the local-dev
+    # dummy-signature-secret fallback
+    # (app.ingress.webhook_auth.resolve_glific_webhook_secret). Full
+    # fail-closed-boot-time coverage lives in tests/test_lifespan_auth.py.
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.environment == ""
+
+
+def test_glific_webhook_secret_and_body_cap_have_no_baked_secret_default(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("GLIFIC_WEBHOOK_SECRET", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.glific_webhook_secret == ""
+    assert settings.max_webhook_body_bytes == 65_536

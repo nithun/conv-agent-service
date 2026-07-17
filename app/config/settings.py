@@ -45,7 +45,23 @@ class Settings(BaseSettings):
 
     # --- Service identity ---
     app_name: str = "tap-agent-service"
-    environment: str = "local"
+    # CR-009 (webhook-auth) fail-closed fix, architecture-reviewer CONDITION
+    # 2 (BLOCKING, 2026-07-17): this field used to default to "local", which
+    # meant an UNSET `ENVIRONMENT` env var (e.g. a `.env` copied from
+    # `.env.example` before that file carried an `ENVIRONMENT=` line) was
+    # silently indistinguishable from an operator EXPLICITLY choosing local
+    # dev — `app.ingress.webhook_auth.resolve_glific_webhook_secret` only
+    # falls back to the published local-dev dummy signature secret when
+    # `environment` reads the EXACT string `"local"`, so a genuinely unset
+    # env var (now `""`, not `"local"`) correctly hits that function's
+    # fail-closed RuntimeError branch instead of silently "authenticating"
+    # a public webhook with a constant published in Glific's own
+    # open-source repo. Local dev must now set `ENVIRONMENT=local`
+    # explicitly (`.env.example` carries it pre-filled, so a fresh
+    # `cp .env.example .env` still boots with zero further action) — this
+    # is an explicit affirmative opt-in, never a default that happens to
+    # read "local".
+    environment: str = ""
 
     # --- External endpoints (no environment-specific defaults) ---
     glific_api_url: str = ""
@@ -122,6 +138,25 @@ class Settings(BaseSettings):
     # GCP_SA_KEY_PATH-sourced mount (/secrets/gcp-sa.json) — no second
     # key-path variable invented.
     google_application_credentials: str = ""
+
+    # --- Glific webhook signature verification (CR-009) ---
+    # Verifies Glific's own `X-Glific-Signature: t=<unix_ts>,v1=<hex>`
+    # header (HMAC-SHA256 over "<timestamp>.<raw_body>", keyed by the
+    # Glific organization's `signature_phrase`) ahead of every other step
+    # on POST /webhook/glific. No baked default (same no-baked-secret
+    # discipline as every other credential field here) — the local-dev
+    # fallback secret is resolved by
+    # `app.ingress.webhook_auth.resolve_glific_webhook_secret`, gated on an
+    # EXPLICIT `environment == "local"`, never on this field's own default
+    # or absence. MUST be set to the exact value of the live org's
+    # `signature_phrase` in staging/prod, delivered out-of-band — never
+    # paste the literal value into any doc/commit in this repo.
+    glific_webhook_secret: str = ""
+    # Body-size cap enforced BEFORE any HMAC computation (CR-009
+    # requirement 5) — generous for a WhatsApp text/media-URL JSON payload
+    # (real payloads are a few hundred bytes to a few KB); closes the
+    # "attacker sends a gigantic body to burn CPU/memory" gap.
+    max_webhook_body_bytes: int = 65_536
 
 
 def get_settings() -> Settings:
