@@ -1,0 +1,203 @@
+# Scripted (non-LLM) child-facing reply text + mode/language-choice
+# matching keywords, per LMS tap_language value (CR-007 GAP 1/2).
+#
+# Mirrors distress_keywords.yaml/language_map.yaml's config-driven-language
+# seam: every language marked `supported: true|false` in language_map.yaml
+# (Punjabi included — it's scoped as fine for scripted TEXT even though its
+# STT/TTS falls back to English, see language_map.yaml + CR-007) has a
+# dedicated block below, covering all 10 language-eligible reply keys plus
+# mode_voice_keywords/mode_text_keywords/language_name_keywords.
+#
+# Translations are MODEL-AUTHORED for this CR — a native-speaker/TAP-team
+# review is a tracked follow-up (F-034), not a precondition (mirrors the
+# pre-existing distress_keywords.yaml caveat, F-009).
+#
+# Fallback contract (app/config/scripted_replies.py::get_scripted_reply):
+# a language missing here, OR missing a specific key, falls back to the
+# English block's value for THAT key alone — never combines two languages
+# into one reply (a scripted reply is one sentence shown to a child;
+# concatenating languages would read as garbled, not "extra coverage" —
+# deliberate divergence from distress_keywords.yaml's English+Hindi-combined
+# fallback).
+#
+# `{child_name}` is a literal str.format() placeholder — greeting_direct and
+# greeting_candidate_confirm are formatted with the resolved child's name at
+# the call site (turn_processor.py), exactly like the pre-CR-007 f-strings
+# they replace.
+#
+# The reserved `_language_choice` block (leading underscore = "meta, not a
+# language", the same convention language_map.yaml's `_fallback` key already
+# establishes) holds the one-time, language-agnostic ask-turn prompt/reask.
+
+English:
+  greeting_direct: "Hi {child_name}! How are you feeling today — excited, okay, or tired?"
+  greeting_candidate_confirm: "Great, hi {child_name}! How are you feeling today?"
+  readiness_mode_choice: "Great. We can talk in voice, or you can type if that feels easier. What would you like?"
+  mode_choice_reask: "Would you like to continue in voice, or by typing?"
+  fallback: "Sorry, I'm having a little trouble right now. Let's try again in a moment."
+  distress_close: "Thank you for telling me. I'm going to get a grown-up to help you with this right now. You did great today."
+  clarification: "I didn't catch that clearly. Can you say it once again?"
+  asr_fallback: "Let's switch to typing for now — you can type your reply instead."
+  unresolved_doubt_escalation: "It looks like this one's tricky today. I'm going to get a grown-up to help explain it properly. You did great trying!"
+  off_turn_nudge: "I understand — let's come back to that in a moment. Shall we continue with today's activity?"
+  mode_voice_keywords: ["voice"]
+  mode_text_keywords: ["text", "type"]
+  language_name_keywords: ["english"]
+
+Hindi:
+  greeting_direct: "नमस्ते {child_name}! आज तुम कैसा महसूस कर रहे हो — उत्साहित, ठीक, या थके हुए?"
+  greeting_candidate_confirm: "बहुत बढ़िया, नमस्ते {child_name}! आज तुम कैसा महसूस कर रहे हो?"
+  readiness_mode_choice: "बढ़िया। हम आवाज़ में बात कर सकते हैं, या अगर आसान लगे तो तुम टाइप भी कर सकते हो। तुम्हें क्या पसंद है?"
+  mode_choice_reask: "क्या तुम आवाज़ में बात करना चाहोगे, या टाइप करके?"
+  fallback: "माफ़ करना, मुझे अभी थोड़ी दिक्कत हो रही है। चलो थोड़ी देर में फिर से कोशिश करते हैं।"
+  distress_close: "मुझे बताने के लिए धन्यवाद। मैं अभी एक बड़े व्यक्ति को इसमें तुम्हारी मदद के लिए बुला रहा हूँ। तुमने आज बहुत बढ़िया किया।"
+  clarification: "मैं ठीक से समझ नहीं पाया। क्या तुम एक बार फिर से बता सकते हो?"
+  asr_fallback: "चलो अभी टाइपिंग पर चलते हैं — तुम अपना जवाब टाइप करके भेज सकते हो।"
+  unresolved_doubt_escalation: "लगता है आज यह सवाल थोड़ा मुश्किल है। मैं एक बड़े व्यक्ति को इसे ठीक से समझाने के लिए बुला रहा हूँ। कोशिश करने के लिए शाबाश!"
+  off_turn_nudge: "समझ गया — चलो थोड़ी देर में उस पर वापस आते हैं। क्या हम आज की गतिविधि जारी रखें?"
+  mode_voice_keywords: ["आवाज़", "आवाज", "awaaz", "बोलकर", "बोलो"]
+  mode_text_keywords: ["टाइप", "type", "likh", "लिख", "टाइप करके"]
+  language_name_keywords: ["hindi", "हिंदी", "हिन्दी"]
+
+Bengali:
+  greeting_direct: "হ্যালো {child_name}! আজ তোমার কেমন লাগছে — উত্তেজিত, ঠিক আছে, নাকি ক্লান্ত?"
+  greeting_candidate_confirm: "দারুণ, হ্যালো {child_name}! আজ তোমার কেমন লাগছে?"
+  readiness_mode_choice: "দারুণ। আমরা ভয়েসে কথা বলতে পারি, অথবা সহজ মনে হলে তুমি টাইপও করতে পারো। তুমি কী চাও?"
+  mode_choice_reask: "তুমি কি ভয়েসে চালিয়ে যেতে চাও, নাকি টাইপ করে?"
+  fallback: "দুঃখিত, আমার এখন একটু সমস্যা হচ্ছে। চলো একটু পরে আবার চেষ্টা করি।"
+  distress_close: "আমাকে বলার জন্য ধন্যবাদ। আমি এখনই একজন বড়কে ডাকছি যিনি তোমাকে সাহায্য করবেন। আজ তুমি খুব ভালো করেছো।"
+  clarification: "আমি ঠিক বুঝতে পারিনি। তুমি কি আবার একবার বলবে?"
+  asr_fallback: "চলো এখন টাইপ করি — তুমি তোমার উত্তর টাইপ করে পাঠাতে পারো।"
+  unresolved_doubt_escalation: "মনে হচ্ছে আজ এটা একটু কঠিন। আমি একজন বড়কে ডাকছি এটা ভালোভাবে বুঝিয়ে দেওয়ার জন্য। চেষ্টা করার জন্য দারুণ কাজ করেছো!"
+  off_turn_nudge: "বুঝেছি — চলো একটু পরে ওটাতে ফিরে আসি। আজকের কাজ কি আমরা চালিয়ে যাবো?"
+  mode_voice_keywords: ["ভয়েস", "voice", "কথা বলে", "বলে"]
+  mode_text_keywords: ["টাইপ", "type", "লিখে"]
+  language_name_keywords: ["bengali", "bangla", "বাংলা"]
+
+Tamil:
+  greeting_direct: "வணக்கம் {child_name}! இன்று நீ எப்படி உணர்கிறாய் — உற்சாகமாகவா, சரியாகவா, அல்லது சோர்வாகவா?"
+  greeting_candidate_confirm: "சூப்பர், வணக்கம் {child_name}! இன்று நீ எப்படி உணர்கிறாய்?"
+  readiness_mode_choice: "சூப்பர். நாம் குரலில் பேசலாம், அல்லது எளிதாக இருந்தால் நீ தட்டச்சு செய்யலாம். உனக்கு எது வேண்டும்?"
+  mode_choice_reask: "நீ குரலில் தொடர விரும்புகிறாயா, அல்லது தட்டச்சு செய்யவா?"
+  fallback: "மன்னிக்கவும், எனக்கு இப்போது கொஞ்சம் சிக்கல் இருக்கிறது. கொஞ்ச நேரத்தில் மீண்டும் முயற்சிப்போம்."
+  distress_close: "எனக்குச் சொன்னதற்கு நன்றி. உனக்கு உதவ ஒரு பெரியவரை இப்போதே அழைக்கிறேன். இன்று நீ மிகச் சிறப்பாக செய்தாய்."
+  clarification: "எனக்கு தெளிவாகப் புரியவில்லை. நீ மீண்டும் ஒருமுறை சொல்ல முடியுமா?"
+  asr_fallback: "இப்போது தட்டச்சுக்கு மாறுவோம் — நீ உன் பதிலை தட்டச்சு செய்து அனுப்பலாம்."
+  unresolved_doubt_escalation: "இன்று இது கொஞ்சம் கடினமாக இருக்கிறது போல் தெரிகிறது. இதை சரியாக விளக்க ஒரு பெரியவரை அழைக்கிறேன். முயற்சி செய்ததற்கு பாராட்டுக்கள்!"
+  off_turn_nudge: "புரிகிறது — கொஞ்ச நேரத்தில் அதற்குத் திரும்புவோம். இன்றைய செயல்பாட்டைத் தொடரலாமா?"
+  mode_voice_keywords: ["குரல்", "voice", "பேசி", "பேசுவது"]
+  mode_text_keywords: ["தட்டச்சு", "type", "எழுதி"]
+  language_name_keywords: ["tamil", "தமிழ்"]
+
+Telugu:
+  greeting_direct: "హాయ్ {child_name}! ఈ రోజు నీకు ఎలా అనిపిస్తోంది — ఉత్సాహంగా, బాగానే, లేదా అలసటగా?"
+  greeting_candidate_confirm: "సూపర్, హాయ్ {child_name}! ఈ రోజు నీకు ఎలా అనిపిస్తోంది?"
+  readiness_mode_choice: "బాగుంది. మనం వాయిస్‌లో మాట్లాడుకోవచ్చు, లేదా సులభంగా అనిపిస్తే నువ్వు టైప్ చేయవచ్చు. నీకు ఏది కావాలి?"
+  mode_choice_reask: "నువ్వు వాయిస్‌లో కొనసాగించాలనుకుంటున్నావా, లేదా టైప్ చేయాలనుకుంటున్నావా?"
+  fallback: "క్షమించు, నాకు ఇప్పుడు కొంచెం ఇబ్బంది అవుతోంది. కొద్ది సేపట్లో మళ్ళీ ప్రయత్నిద్దాం."
+  distress_close: "నాకు చెప్పినందుకు ధన్యవాదాలు. నీకు సహాయం చేయడానికి నేను ఇప్పుడే ఒక పెద్దవారిని పిలుస్తున్నాను. ఈ రోజు నువ్వు చాలా బాగా చేశావు."
+  clarification: "నాకు సరిగ్గా అర్థం కాలేదు. నువ్వు మళ్ళీ ఒకసారి చెప్పగలవా?"
+  asr_fallback: "ఇప్పుడు టైపింగ్‌కి మారదాం — నువ్వు నీ జవాబును టైప్ చేసి పంపవచ్చు."
+  unresolved_doubt_escalation: "ఈ రోజు ఇది కొంచెం కష్టంగా ఉన్నట్టు అనిపిస్తోంది. దీన్ని సరిగ్గా వివరించడానికి నేను ఒక పెద్దవారిని పిలుస్తున్నాను. ప్రయత్నించినందుకు శభాష్!"
+  off_turn_nudge: "అర్థమైంది — కొద్ది సేపట్లో దానికి తిరిగి వద్దాం. ఈ రోజు కార్యకలాపాన్ని కొనసాగిద్దామా?"
+  mode_voice_keywords: ["వాయిస్", "voice", "మాట్లాడి", "మాటల్లో"]
+  mode_text_keywords: ["టైప్", "type", "రాసి"]
+  language_name_keywords: ["telugu", "తెలుగు"]
+
+Marathi:
+  greeting_direct: "नमस्कार {child_name}! आज तुला कसं वाटतंय — उत्साही, ठीक, की दमलेलं?"
+  greeting_candidate_confirm: "छान, नमस्कार {child_name}! आज तुला कसं वाटतंय?"
+  readiness_mode_choice: "छान. आपण आवाजात बोलू शकतो, किंवा सोपं वाटलं तर तू टाइप करू शकतोस. तुला काय आवडेल?"
+  mode_choice_reask: "तुला आवाजात बोलत राहायचंय, की टाइप करून?"
+  fallback: "माफ कर, मला आत्ता थोडी अडचण येत आहे. थोड्या वेळाने पुन्हा प्रयत्न करूया."
+  distress_close: "मला सांगितल्याबद्दल धन्यवाद. मी आत्ताच एका मोठ्या माणसाला तुझ्या मदतीसाठी बोलावत आहे. आज तू खूप छान केलंस."
+  clarification: "मला नीट कळलं नाही. तू परत एकदा सांगशील का?"
+  asr_fallback: "आता आपण टायपिंगकडे वळूया — तू तुझं उत्तर टाइप करून पाठवू शकतोस."
+  unresolved_doubt_escalation: "आज हे थोडं अवघड वाटतंय. हे नीट समजावण्यासाठी मी एका मोठ्या माणसाला बोलावत आहे. प्रयत्न केल्याबद्दल शाब्बास!"
+  off_turn_nudge: "समजलं — थोड्या वेळाने त्यावर परत येऊया. आजचा उपक्रम पुढे सुरू ठेवूया का?"
+  mode_voice_keywords: ["आवाज", "voice", "बोलून"]
+  mode_text_keywords: ["टाइप", "type", "लिहून"]
+  language_name_keywords: ["marathi", "मराठी"]
+
+Gujarati:
+  greeting_direct: "નમસ્તે {child_name}! આજે તને કેવું લાગે છે — ઉત્સાહિત, ઠીક, કે થાકેલું?"
+  greeting_candidate_confirm: "સરસ, નમસ્તે {child_name}! આજે તને કેવું લાગે છે?"
+  readiness_mode_choice: "સરસ. આપણે અવાજમાં વાત કરી શકીએ, અથવા સહેલું લાગે તો તું ટાઇપ પણ કરી શકે છે. તને શું ગમશે?"
+  mode_choice_reask: "તારે અવાજમાં ચાલુ રાખવું છે, કે ટાઇપ કરીને?"
+  fallback: "માફ કરજે, મને અત્યારે થોડી તકલીફ થઈ રહી છે. થોડી વારમાં ફરી પ્રયત્ન કરીએ."
+  distress_close: "મને કહેવા બદલ આભાર. હું અત્યારે જ એક મોટી વ્યક્તિને તારી મદદ માટે બોલાવી રહ્યો છું. આજે તેં ખૂબ સરસ કર્યું."
+  clarification: "મને બરાબર સમજાયું નહીં. તું ફરી એકવાર કહીશ?"
+  asr_fallback: "ચાલો હવે ટાઇપિંગ પર જઈએ — તું તારો જવાબ ટાઇપ કરીને મોકલી શકે છે."
+  unresolved_doubt_escalation: "આજે આ થોડું અઘરું લાગે છે. આને બરાબર સમજાવવા માટે હું એક મોટી વ્યક્તિને બોલાવી રહ્યો છું. પ્રયત્ન કરવા બદલ શાબાશ!"
+  off_turn_nudge: "સમજાયું — થોડી વારમાં એના પર પાછા આવીએ. શું આપણે આજની પ્રવૃત્તિ ચાલુ રાખીએ?"
+  mode_voice_keywords: ["અવાજ", "voice", "બોલીને"]
+  mode_text_keywords: ["ટાઇપ", "type", "લખીને"]
+  language_name_keywords: ["gujarati", "ગુજરાતી"]
+
+Kannada:
+  greeting_direct: "ಹಾಯ್ {child_name}! ಇಂದು ನಿನಗೆ ಹೇಗನಿಸುತ್ತಿದೆ — ಉತ್ಸಾಹದಿಂದ, ಚೆನ್ನಾಗಿ, ಅಥವಾ ದಣಿವಾಗಿದೆಯಾ?"
+  greeting_candidate_confirm: "ಸೂಪರ್, ಹಾಯ್ {child_name}! ಇಂದು ನಿನಗೆ ಹೇಗನಿಸುತ್ತಿದೆ?"
+  readiness_mode_choice: "ಚೆನ್ನಾಗಿದೆ. ನಾವು ಧ್ವನಿಯಲ್ಲಿ ಮಾತನಾಡಬಹುದು, ಅಥವಾ ಸುಲಭ ಎನಿಸಿದರೆ ನೀನು ಟೈಪ್ ಮಾಡಬಹುದು. ನಿನಗೆ ಯಾವುದು ಇಷ್ಟ?"
+  mode_choice_reask: "ನೀನು ಧ್ವನಿಯಲ್ಲಿ ಮುಂದುವರಿಸಲು ಬಯಸುವೆಯಾ, ಅಥವಾ ಟೈಪ್ ಮಾಡಿಯಾ?"
+  fallback: "ಕ್ಷಮಿಸು, ನನಗೆ ಈಗ ಸ್ವಲ್ಪ ತೊಂದರೆಯಾಗುತ್ತಿದೆ. ಸ್ವಲ್ಪ ಸಮಯದಲ್ಲಿ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸೋಣ."
+  distress_close: "ನನಗೆ ಹೇಳಿದ್ದಕ್ಕೆ ಧನ್ಯವಾದಗಳು. ನಿನಗೆ ಸಹಾಯ ಮಾಡಲು ನಾನು ಈಗಲೇ ಒಬ್ಬ ದೊಡ್ಡವರನ್ನು ಕರೆಯುತ್ತಿದ್ದೇನೆ. ಇಂದು ನೀನು ತುಂಬಾ ಚೆನ್ನಾಗಿ ಮಾಡಿದೆ."
+  clarification: "ನನಗೆ ಸರಿಯಾಗಿ ಅರ್ಥವಾಗಲಿಲ್ಲ. ನೀನು ಮತ್ತೊಮ್ಮೆ ಹೇಳುವೆಯಾ?"
+  asr_fallback: "ಈಗ ಟೈಪಿಂಗ್‌ಗೆ ಬದಲಾಗೋಣ — ನೀನು ನಿನ್ನ ಉತ್ತರವನ್ನು ಟೈಪ್ ಮಾಡಿ ಕಳುಹಿಸಬಹುದು."
+  unresolved_doubt_escalation: "ಇಂದು ಇದು ಸ್ವಲ್ಪ ಕಷ್ಟ ಎನಿಸುತ್ತಿದೆ. ಇದನ್ನು ಸರಿಯಾಗಿ ವಿವರಿಸಲು ನಾನು ಒಬ್ಬ ದೊಡ್ಡವರನ್ನು ಕರೆಯುತ್ತಿದ್ದೇನೆ. ಪ್ರಯತ್ನಿಸಿದ್ದಕ್ಕೆ ಶಹಬ್ಬಾಸ್!"
+  off_turn_nudge: "ಅರ್ಥವಾಯಿತು — ಸ್ವಲ್ಪ ಸಮಯದಲ್ಲಿ ಅದಕ್ಕೆ ಹಿಂತಿರುಗೋಣ. ಇಂದಿನ ಚಟುವಟಿಕೆಯನ್ನು ಮುಂದುವರಿಸೋಣವೇ?"
+  mode_voice_keywords: ["ಧ್ವನಿ", "voice", "ಮಾತನಾಡಿ"]
+  mode_text_keywords: ["ಟೈಪ್", "type", "ಬರೆದು"]
+  language_name_keywords: ["kannada", "ಕನ್ನಡ"]
+
+Malayalam:
+  greeting_direct: "ഹായ് {child_name}! ഇന്ന് നിനക്ക് എങ്ങനെ തോന്നുന്നു — ഉത്സാഹത്തോടെ, കുഴപ്പമില്ല, അതോ ക്ഷീണിച്ചോ?"
+  greeting_candidate_confirm: "സൂപ്പർ, ഹായ് {child_name}! ഇന്ന് നിനക്ക് എങ്ങനെ തോന്നുന്നു?"
+  readiness_mode_choice: "കൊള്ളാം. നമുക്ക് ശബ്ദത്തിൽ സംസാരിക്കാം, അല്ലെങ്കിൽ എളുപ്പമെങ്കിൽ നിനക്ക് ടൈപ്പ് ചെയ്യാം. നിനക്ക് എന്താണ് വേണ്ടത്?"
+  mode_choice_reask: "നിനക്ക് ശബ്ദത്തിൽ തുടരണോ, അതോ ടൈപ്പ് ചെയ്യണോ?"
+  fallback: "ക്ഷമിക്കണം, എനിക്ക് ഇപ്പോൾ അല്പം ബുദ്ധിമുട്ട് ഉണ്ട്. കുറച്ച് കഴിഞ്ഞ് വീണ്ടും ശ്രമിക്കാം."
+  distress_close: "എന്നോട് പറഞ്ഞതിന് നന്ദി. നിന്നെ സഹായിക്കാൻ ഞാൻ ഇപ്പോൾ തന്നെ ഒരു മുതിർന്ന ആളെ വിളിക്കുന്നു. ഇന്ന് നീ വളരെ നന്നായി ചെയ്തു."
+  clarification: "എനിക്ക് വ്യക്തമായി മനസ്സിലായില്ല. നിനക്ക് ഒരിക്കൽ കൂടി പറയാമോ?"
+  asr_fallback: "നമുക്ക് ഇപ്പോൾ ടൈപ്പിംഗിലേക്ക് മാറാം — നിനക്ക് നിന്റെ മറുപടി ടൈപ്പ് ചെയ്ത് അയക്കാം."
+  unresolved_doubt_escalation: "ഇന്ന് ഇത് അല്പം ബുദ്ധിമുട്ടാണെന്ന് തോന്നുന്നു. ഇത് ശരിയായി വിശദീകരിക്കാൻ ഞാൻ ഒരു മുതിർന്ന ആളെ വിളിക്കുന്നു. ശ്രമിച്ചതിന് കൊള്ളാം!"
+  off_turn_nudge: "മനസ്സിലായി — കുറച്ച് കഴിഞ്ഞ് അതിലേക്ക് തിരിച്ചുവരാം. ഇന്നത്തെ പ്രവർത്തനം നമുക്ക് തുടരാമോ?"
+  mode_voice_keywords: ["ശബ്ദം", "voice", "പറഞ്ഞ്"]
+  mode_text_keywords: ["ടൈപ്പ്", "type", "എഴുതി"]
+  language_name_keywords: ["malayalam", "മലയാളം"]
+
+Punjabi:
+  # Fine as scripted TEXT despite language_map.yaml's supported: false
+  # (STT/TTS-only gap) — CR-007 Proposed behavior. This block is
+  # independent of language_map.yaml's supported/resolve_locale machinery,
+  # same shape as distress_keywords.yaml's per-language lookup.
+  greeting_direct: "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ {child_name}! ਅੱਜ ਤੈਨੂੰ ਕਿਵੇਂ ਮਹਿਸੂਸ ਹੋ ਰਿਹਾ ਹੈ — ਉਤਸ਼ਾਹਿਤ, ਠੀਕ, ਜਾਂ ਥੱਕਿਆ ਹੋਇਆ?"
+  greeting_candidate_confirm: "ਬਹੁਤ ਵਧੀਆ, ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ {child_name}! ਅੱਜ ਤੈਨੂੰ ਕਿਵੇਂ ਮਹਿਸੂਸ ਹੋ ਰਿਹਾ ਹੈ?"
+  readiness_mode_choice: "ਬਹੁਤ ਵਧੀਆ। ਅਸੀਂ ਆਵਾਜ਼ ਵਿੱਚ ਗੱਲ ਕਰ ਸਕਦੇ ਹਾਂ, ਜਾਂ ਜੇ ਸੌਖਾ ਲੱਗੇ ਤਾਂ ਤੂੰ ਟਾਈਪ ਵੀ ਕਰ ਸਕਦਾ ਹੈਂ। ਤੈਨੂੰ ਕੀ ਪਸੰਦ ਹੈ?"
+  mode_choice_reask: "ਕੀ ਤੂੰ ਆਵਾਜ਼ ਵਿੱਚ ਜਾਰੀ ਰੱਖਣਾ ਚਾਹੁੰਦਾ ਹੈਂ, ਜਾਂ ਟਾਈਪ ਕਰਕੇ?"
+  fallback: "ਮਾਫ਼ ਕਰਨਾ, ਮੈਨੂੰ ਹੁਣੇ ਥੋੜ੍ਹੀ ਦਿੱਕਤ ਆ ਰਹੀ ਹੈ। ਆਓ ਥੋੜ੍ਹੀ ਦੇਰ ਬਾਅਦ ਫਿਰ ਕੋਸ਼ਿਸ਼ ਕਰੀਏ।"
+  distress_close: "ਮੈਨੂੰ ਦੱਸਣ ਲਈ ਧੰਨਵਾਦ। ਮੈਂ ਹੁਣੇ ਹੀ ਇੱਕ ਵੱਡੇ ਵਿਅਕਤੀ ਨੂੰ ਤੇਰੀ ਮਦਦ ਲਈ ਬੁਲਾ ਰਿਹਾ ਹਾਂ। ਅੱਜ ਤੂੰ ਬਹੁਤ ਵਧੀਆ ਕੀਤਾ।"
+  clarification: "ਮੈਨੂੰ ਠੀਕ ਤਰ੍ਹਾਂ ਸਮਝ ਨਹੀਂ ਆਇਆ। ਕੀ ਤੂੰ ਇੱਕ ਵਾਰ ਫਿਰ ਦੱਸ ਸਕਦਾ ਹੈਂ?"
+  asr_fallback: "ਆਓ ਹੁਣ ਟਾਈਪਿੰਗ ਵੱਲ ਚੱਲੀਏ — ਤੂੰ ਆਪਣਾ ਜਵਾਬ ਟਾਈਪ ਕਰਕੇ ਭੇਜ ਸਕਦਾ ਹੈਂ।"
+  unresolved_doubt_escalation: "ਲੱਗਦਾ ਹੈ ਅੱਜ ਇਹ ਥੋੜ੍ਹਾ ਔਖਾ ਹੈ। ਮੈਂ ਇਸਨੂੰ ਠੀਕ ਤਰ੍ਹਾਂ ਸਮਝਾਉਣ ਲਈ ਇੱਕ ਵੱਡੇ ਵਿਅਕਤੀ ਨੂੰ ਬੁਲਾ ਰਿਹਾ ਹਾਂ। ਕੋਸ਼ਿਸ਼ ਕਰਨ ਲਈ ਸ਼ਾਬਾਸ਼!"
+  off_turn_nudge: "ਸਮਝ ਗਿਆ — ਆਓ ਥੋੜ੍ਹੀ ਦੇਰ ਬਾਅਦ ਉਸ ਵੱਲ ਵਾਪਸ ਆਈਏ। ਕੀ ਅਸੀਂ ਅੱਜ ਦੀ ਗਤੀਵਿਧੀ ਜਾਰੀ ਰੱਖੀਏ?"
+  mode_voice_keywords: ["ਆਵਾਜ਼", "voice", "ਬੋਲ ਕੇ"]
+  mode_text_keywords: ["ਟਾਈਪ", "type", "ਲਿਖ ਕੇ"]
+  language_name_keywords: ["punjabi", "ਪੰਜਾਬੀ"]
+
+Urdu:
+  greeting_direct: "ہیلو {child_name}! آج تمہیں کیسا محسوس ہو رہا ہے — پرجوش، ٹھیک، یا تھکا ہوا؟"
+  greeting_candidate_confirm: "بہت خوب، ہیلو {child_name}! آج تمہیں کیسا محسوس ہو رہا ہے؟"
+  readiness_mode_choice: "بہت اچھا۔ ہم آواز میں بات کر سکتے ہیں، یا اگر آسان لگے تو تم ٹائپ بھی کر سکتے ہو۔ تمہیں کیا پسند ہے؟"
+  mode_choice_reask: "کیا تم آواز میں جاری رکھنا چاہتے ہو، یا ٹائپ کر کے؟"
+  fallback: "معاف کرنا، مجھے ابھی تھوڑی مشکل ہو رہی ہے۔ چلو تھوڑی دیر میں دوبارہ کوشش کرتے ہیں۔"
+  distress_close: "مجھے بتانے کا شکریہ۔ میں ابھی ایک بڑے کو تمہاری مدد کے لیے بلا رہا ہوں۔ آج تم نے بہت اچھا کیا۔"
+  clarification: "مجھے ٹھیک سے سمجھ نہیں آیا۔ کیا تم ایک بار پھر بتاؤ گے؟"
+  asr_fallback: "چلو اب ٹائپنگ کی طرف چلتے ہیں — تم اپنا جواب ٹائپ کر کے بھیج سکتے ہو۔"
+  unresolved_doubt_escalation: "لگتا ہے آج یہ تھوڑا مشکل ہے۔ میں اسے ٹھیک طرح سمجھانے کے لیے ایک بڑے کو بلا رہا ہوں۔ کوشش کرنے کے لیے شاباش!"
+  off_turn_nudge: "سمجھ گیا — چلو تھوڑی دیر میں اس کی طرف واپس آتے ہیں۔ کیا ہم آج کی سرگرمی جاری رکھیں؟"
+  mode_voice_keywords: ["آواز", "voice", "بول کر"]
+  mode_text_keywords: ["ٹائپ", "type", "لکھ کر"]
+  language_name_keywords: ["urdu", "اردو"]
+
+_language_choice:
+  prompt: "Which language would you like to use? हिंदी (Hindi) / বাংলা (Bengali) / தமிழ் (Tamil) / తెలుగు (Telugu) / मराठी (Marathi) / ગુજરાતી (Gujarati) / ಕನ್ನಡ (Kannada) / മലയാളം (Malayalam) / ਪੰਜਾਬੀ (Punjabi) / اردو (Urdu) / English"
+  reask: "Sorry, I didn't catch that. Please reply with one: Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati, Kannada, Malayalam, Punjabi, Urdu, or English."
