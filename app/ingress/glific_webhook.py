@@ -21,17 +21,25 @@ now run only in the worker (`app/worker/escalation_consumer.py`), off this
 ack path, exactly like every other reply. All other turn processing
 (identity resolution, LLM calls, tool calls, guardrails) also happens in
 `app/worker/`, never here.
+
+CR-009 (2026-07-17): the route gained a signature-verification dependency
+(`app/ingress/webhook_auth.py::verify_glific_webhook_signature`), wired via
+`dependencies=[Depends(...)]` — it runs BEFORE this handler body, ahead of
+JSON parsing/dedupe/distress-gate/enqueue, and rejects with a uniform 401
+(or 413 for an oversized body) before any of those steps run. No line in
+this handler body changed for CR-009.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
 from app.core.guardrails_checks import detect_distress
 from app.ingress.glific_payload import GlificWebhookPayload, parse_glific_webhook_payload
+from app.ingress.webhook_auth import verify_glific_webhook_signature
 from app.queue.enqueue import enqueue_turn, is_duplicate_message
 from app.queue.escalation_queue import enqueue_escalation
 
@@ -55,7 +63,7 @@ def _flatten_payload_for_stream(payload: GlificWebhookPayload) -> dict[str, str]
     }
 
 
-@router.post("/webhook/glific")
+@router.post("/webhook/glific", dependencies=[Depends(verify_glific_webhook_signature)])
 async def glific_webhook(request: Request) -> dict[str, object]:
     """Fast-ack endpoint. Parses the payload, dedupes, checks distress, and
     enqueues onto the contact's Redis Stream partition — then acks

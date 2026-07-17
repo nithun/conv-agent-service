@@ -26,7 +26,20 @@ from app.ingress.media import (
     transcribe_inbound_media,
 )
 from app.ingress.media import router as media_router
+from app.ingress.webhook_auth import verify_glific_webhook_signature
 from app.tools.speech_client import AsrResult, TtsResult
+
+
+def test_media_route_has_no_webhook_signature_dependency() -> None:
+    """AC-8 (CR-009): /media/{token} stays public/BSP-fetchable per CR-007's
+    live-verified contract — the BSP fetching audio anonymously is not a
+    party that would ever carry a Glific-org signing secret. Negative-claim
+    reachability check (P-005 idiom).
+    """
+    route = next(r for r in media_router.routes if r.path == "/media/{token}")  # type: ignore[attr-defined]
+    dependency_callables = [dep.call for dep in route.dependant.dependencies]  # type: ignore[attr-defined]
+
+    assert verify_glific_webhook_signature not in dependency_callables
 
 
 @pytest.mark.asyncio

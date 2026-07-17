@@ -22,6 +22,7 @@ from app.delivery.glific_client import GlificClient
 from app.ingress.glific_webhook import router as webhook_router
 from app.ingress.health import router as health_router
 from app.ingress.media import router as media_router
+from app.ingress.webhook_auth import resolve_glific_webhook_secret
 from app.llm.router import build_default_model_router
 from app.tools.lms_client import TapLmsClient
 from app.worker.session_store import RedisSessionStore
@@ -63,6 +64,16 @@ def _build_redis_client(settings: Settings) -> Redis:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     app.state.settings = settings
+
+    # CR-009 (webhook auth, 2026-07-17): resolve — or fail-closed reject —
+    # the Glific webhook signature secret BEFORE constructing any client.
+    # An unkeyable verification config must never let the process come up
+    # looking healthy (architecture-reviewer ENDORSED this boot-time-failure
+    # behavior; AC-2). See app/ingress/webhook_auth.py's
+    # resolve_glific_webhook_secret docstring for the fail-closed-by-
+    # environment rule.
+    app.state.glific_webhook_secret = resolve_glific_webhook_secret(settings)
+
     app.state.redis = _build_redis_client(settings)
     app.state.lms_client = _build_lms_client(settings)
     app.state.model_router = build_default_model_router(

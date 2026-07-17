@@ -16,6 +16,24 @@ worker-side drain, not a direct call to `handle_distress` (code-review fix,
 2026-07-05, Finding 1 — the ingress route itself now only enqueues, per
 L-002; the fixture's `drain_escalation()` stands in for the standalone
 worker process that performs the real send/Ticket-open asynchronously).
+
+CR-009 (2026-07-17): `/webhook/glific` now requires a valid
+`X-Glific-Signature` header on every request (see
+`app/ingress/webhook_auth.py`). `httpx.AsyncClient` normally never runs
+FastAPI's `lifespan` (it isn't triggered by `ASGITransport`), so
+`app.state.settings`/`app.state.glific_webhook_secret` — which the new
+dependency reads — are set directly here, same discipline as the existing
+`app.state.redis`/`app.state.session_store` assignments below. `client`
+and `client_with_escalation_worker` additionally install a `request` event
+hook that auto-signs any POST to `/webhook/glific` with
+`TEST_WEBHOOK_SECRET` UNLESS the test already supplied its own
+`X-Glific-Signature` header — this keeps every pre-existing test in this
+package working unchanged (they exercise post-auth behavior, not auth
+itself) while still leaving individual tests free to override the header
+to exercise a rejection path. `raw_client` (auth-focused negative-path
+tests, `tests/ingress/test_glific_webhook.py`) skips the auto-sign hook
+entirely so a test can send NO header at all, a malformed one, or a
+deliberately wrong one.
 """
 
 from __future__ import annotations
@@ -32,6 +50,34 @@ from app.config.settings import Settings
 from app.main import app
 from app.worker.escalation_consumer import drain_escalation_stream_once
 from app.worker.session_store import RedisSessionStore
+from tests.ingress._webhook_signing import sign_webhook_body
+
+# CR-009: fixed test secret for every ingress test that goes through the
+# real `/webhook/glific` route via `client`/`client_with_escalation_worker`/
+# `raw_client` below — NOT the published Glific dummy secret (deliberately
+# distinct, so a test never accidentally "passes" against the wrong
+# fallback constant).
+TEST_WEBHOOK_SECRET = "cr-009-test-secret-do-not-use-in-any-real-env"
+
+
+async def _auto_sign_glific_webhook_requests(request: httpx.Request) -> None:
+    """httpx request event hook: signs any POST to `/webhook/glific` with
+    `TEST_WEBHOOK_SECRET` over the FINAL request body bytes (after httpx's
+    own `json=`/`content=` serialization), unless the test already set its
+    own `X-Glific-Signature` header.
+    """
+    if request.method == "POST" and request.url.path == "/webhook/glific":
+        if "X-Glific-Signature" not in request.headers:
+            request.headers["X-Glific-Signature"] = sign_webhook_body(
+                TEST_WEBHOOK_SECRET, request.content
+            )
+
+
+def _install_webhook_auth_state(settings: Settings | None = None) -> None:
+    app.state.settings = settings or Settings(
+        environment="local", glific_webhook_secret=TEST_WEBHOOK_SECRET, _env_file=None
+    )
+    app.state.glific_webhook_secret = TEST_WEBHOOK_SECRET
 
 
 class _GlificSenderLike(Protocol):
@@ -47,6 +93,24 @@ class _GlificSenderLike(Protocol):
 @pytest.fixture
 async def client() -> AsyncGenerator[httpx.AsyncClient, None]:
     app.state.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    _install_webhook_auth_state()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        event_hooks={"request": [_auto_sign_glific_webhook_requests]},
+    ) as c:
+        yield c
+
+
+@pytest.fixture
+async def raw_client() -> AsyncGenerator[httpx.AsyncClient, None]:
+    """Like `client`, but WITHOUT the auto-sign event hook — for CR-009's
+    negative-path/auth-focused tests that need full control over (or
+    complete absence of) the `X-Glific-Signature` header.
+    """
+    app.state.redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    _install_webhook_auth_state()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -103,12 +167,19 @@ class _ClientWithEscalationWorker:
 async def client_with_escalation_worker() -> AsyncGenerator[_ClientWithEscalationWorker, None]:
     fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     fake_glific = FakeGlificSender()
-    settings = Settings(_env_file=None)
+    settings = Settings(
+        environment="local", glific_webhook_secret=TEST_WEBHOOK_SECRET, _env_file=None
+    )
     session_store = RedisSessionStore(fake_redis, settings)
 
     app.state.redis = fake_redis
     app.state.session_store = session_store
+    _install_webhook_auth_state(settings)
 
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        event_hooks={"request": [_auto_sign_glific_webhook_requests]},
+    ) as c:
         yield _ClientWithEscalationWorker(client=c, fake_glific=fake_glific)

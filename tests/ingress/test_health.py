@@ -5,6 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from app.ingress.health import router as health_router
+from app.ingress.webhook_auth import verify_glific_webhook_signature
 from app.main import app
 
 
@@ -16,3 +18,16 @@ async def test_health_returns_200_ok() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_health_route_has_no_webhook_signature_dependency() -> None:
+    """AC-8 (CR-009): /health stays a dependency-free liveness probe — LB/
+    uptime checks need this. Negative-claim reachability check (P-005
+    idiom): asserts the new dependency is ABSENT, not merely that the route
+    still returns 200 (which would be true even if the dependency were
+    present but a valid signature happened to be supplied).
+    """
+    route = next(r for r in health_router.routes if r.path == "/health")  # type: ignore[attr-defined]
+    dependency_callables = [dep.call for dep in route.dependant.dependencies]  # type: ignore[attr-defined]
+
+    assert verify_glific_webhook_signature not in dependency_callables
