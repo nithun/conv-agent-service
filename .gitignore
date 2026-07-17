@@ -6,3 +6,6 @@ __pycache__/
 .ruff_cache/
 .env
 .DS_Store
+
+# TTS media files (runtime artifacts, served via /media/{token})
+data/

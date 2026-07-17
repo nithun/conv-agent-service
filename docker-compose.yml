@@ -32,6 +32,12 @@ services:
     volumes:
       - ./app:/srv/app
       - ./tests:/srv/tests
+      # Shared TTS media dir (CR-007): the WORKER synthesizes and writes
+      # audio files here; the APP's /media/{token} route serves them to the
+      # BSP. Without one shared mount the file lands in the worker's
+      # container-local filesystem and every public media fetch 404s
+      # (caught live 2026-07-17 during CR-007's pre-phone-test smoke).
+      - ./data/media:/srv/data/media
 
   worker:
     build:
@@ -68,6 +74,8 @@ services:
       # litellm's `:?set in .env` mount below, which intentionally hard-fails
       # since litellm's whole purpose requires the key).
       - ${GCP_SA_KEY_PATH:-/dev/null}:/secrets/gcp-sa.json:ro
+      # Shared TTS media dir (CR-007) — see the app service's same mount.
+      - ./data/media:/srv/data/media
     command: ["python", "-m", "app.worker.main"]
 
   redis:
