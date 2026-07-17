@@ -26,10 +26,20 @@ from typing import Any
 SESSION_TTL_SECONDS = 30 * 60  # 30-min inactivity expiry — ported from tap-buddy (R-2)
 MAX_REEXPLANATIONS = 2
 MAX_ASR_FAILURES = 2
+# CR-007 GAP 0: one scripted re-ask cap for the language-choice turn — on
+# the SECOND non-match the session defaults to English rather than asking a
+# third time (never blocks the conversation). See record_language_choice_attempt.
+MAX_LANGUAGE_CHOICE_ATTEMPTS = 1
 
 
 class SessionState(StrEnum):
     IDENTITY_CONFIRMATION = "identity_confirmation"
+    # CR-007 GAP 0: entered from IDENTITY_CONFIRMATION only when identity
+    # resolution didn't yield a tap_language (today's live-real case — the
+    # LMS never returns one, see identity.py/turn_processor.py). Self-
+    # retiring: once tap_language is populated at resolution time, this
+    # state is structurally unreachable for that contact.
+    LANGUAGE_CHOICE = "language_choice"
     GREETING = "greeting"
     MODE_CHOICE = "mode_choice"
     CONTENT_INTRO = "content_intro"
@@ -54,7 +64,12 @@ class InvalidTransition(Exception):
 # capped by `reexplanation_count`; `escalated` is reachable from any non-terminal
 # state (distress/ASR-failure/unresolved-doubt can occur at any point).
 _ALLOWED_TRANSITIONS: dict[SessionState, set[SessionState]] = {
-    SessionState.IDENTITY_CONFIRMATION: {SessionState.GREETING, SessionState.ESCALATED},
+    SessionState.IDENTITY_CONFIRMATION: {
+        SessionState.GREETING,
+        SessionState.LANGUAGE_CHOICE,
+        SessionState.ESCALATED,
+    },
+    SessionState.LANGUAGE_CHOICE: {SessionState.GREETING, SessionState.ESCALATED},
     SessionState.GREETING: {SessionState.MODE_CHOICE, SessionState.ESCALATED},
     SessionState.MODE_CHOICE: {SessionState.CONTENT_INTRO, SessionState.ESCALATED},
     SessionState.CONTENT_INTRO: {SessionState.ACTIVITY_IN_PROGRESS, SessionState.ESCALATED},
@@ -111,6 +126,11 @@ class SessionData:
     turn_count: int = 0
     reexplanation_count: int = 0
     asr_failure_count: int = 0
+    # CR-007 GAP 0: unmatched-reply counter for the LANGUAGE_CHOICE turn.
+    # Dataclass default 0 — an already-serialized Redis session hash from
+    # before this field existed deserializes it as 0 with no migration
+    # needed (mirrors asr_failure_count's existing shape).
+    language_choice_attempts: int = 0
     readiness_response: str | None = None
     resolved_locale: dict[str, Any] | None = None  # {"stt_locale":..., "tts_voice":...}
     escalation_reason: EscalationReason | None = None
@@ -201,3 +221,21 @@ def record_asr_failure(session: SessionData, *, now: float | None = None) -> boo
 
 def reset_asr_failures(session: SessionData) -> None:
     session.asr_failure_count = 0
+
+
+def record_language_choice_attempt(session: SessionData, *, now: float | None = None) -> bool:
+    """Bumps the language-choice unmatched-reply counter. Returns True once
+    the re-ask cap (MAX_LANGUAGE_CHOICE_ATTEMPTS) is EXCEEDED — caller
+    should default `tap_language` to English and proceed to GREETING rather
+    than re-ask again (GAP 0: never blocks the conversation).
+
+    Increment+touch shape mirrors `record_asr_failure`; the `>` comparison
+    (not `>=`) mirrors `record_reexplanation`'s style instead, because
+    MAX_LANGUAGE_CHOICE_ATTEMPTS counts ALLOWED re-asks (1), not a
+    consecutive-failure-before-fallback threshold: the 1st unmatched reply
+    should still get its one scripted re-ask; only the 2nd (exceeding the
+    cap of 1) defaults to English.
+    """
+    session.language_choice_attempts += 1
+    session.touch(now)
+    return session.language_choice_attempts > MAX_LANGUAGE_CHOICE_ATTEMPTS

@@ -17,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.config.language_map import resolve_locale
 from app.core.state_machine import SessionData, StudentIdentity, new_session
 from app.tools.lms_client import StudentCandidate, StudentLookupResult
 
@@ -75,8 +74,17 @@ async def resolve_identity_by_name(
     if len(candidates) == 1:
         session.identity = _identity_from_candidate(candidates[0])
     elif needs_confirmation:
+        # CR-007 (in-scope bug fix): carry tap_language forward so
+        # confirm_identity below can populate session.identity.tap_language
+        # on a successful multi-candidate confirm — StudentCandidate always
+        # has the field (possibly None), previously dropped here.
         session.identity.candidates = [
-            {"student_id": c.student_id, "child_name": c.child_name} for c in candidates
+            {
+                "student_id": c.student_id,
+                "child_name": c.child_name,
+                "tap_language": c.tap_language,
+            }
+            for c in candidates
         ]
 
     return IdentityResolution(
@@ -95,15 +103,49 @@ def confirm_identity(session: SessionData, confirmed_name: str) -> bool:
         if candidate["child_name"].strip().lower() == confirmed_name.strip().lower():
             session.identity.student_id = candidate["student_id"]
             session.identity.child_name = candidate["child_name"]
+            # CR-007 (in-scope bug fix): previously only the single-match
+            # path ever populated tap_language, leaving the candidate-
+            # confirm path's greeting reply running with tap_language=None
+            # even when the matched candidate carried a language. Stores
+            # the RAW candidate value (see _identity_from_candidate's
+            # docstring for why this is raw, not resolve_locale'd, despite
+            # the CR text describing this as mirroring that function's
+            # "existing" — pre-this-CR, eager-resolving — shape).
+            session.identity.tap_language = candidate.get("tap_language")
             return True
     return False
 
 
 def _identity_from_candidate(candidate: StudentCandidate) -> StudentIdentity:
-    locale = resolve_locale(candidate.tap_language)
+    """CR-007 deviation (feature-builder, live-verified against this repo's
+    own code, not the CR's literal text): stores the RAW `candidate.tap_language`
+    (possibly None) rather than eagerly resolving it through `resolve_locale`
+    as this function did pre-CR-007. Two reasons this is necessary, not
+    optional:
+
+    1. GAP 0's whole premise is "when session.identity.tap_language is
+       falsy, offer the language-choice turn" (turn_processor.py). The old
+       eager-resolve_locale call coerced a missing LMS language to the
+       STRING "English" right here — session.identity.tap_language was
+       therefore NEVER actually falsy after a successful resolution, making
+       the language-choice turn structurally unreachable. Storing the raw
+       value (None when the LMS supplies nothing, matching live reality
+       per this CR's own root-cause finding) is what makes GAP 0's trigger
+       condition real.
+    2. Punjabi is explicitly scoped as "fine as scripted TEXT" despite
+       `language_map.yaml` marking it `supported: false` for STT/TTS (this
+       CR's Proposed behavior section). Eager resolve_locale would have
+       coerced a Punjabi candidate's tap_language to "English" immediately
+       (resolve_locale's own supported-gate), permanently hiding Punjabi
+       scripted replies. Every downstream consumer of
+       `session.identity.tap_language` (turn_logic.py's `resolve_locale`
+       calls, `app/config/scripted_replies.py`'s loader, `detect_distress`)
+       already independently tolerates/falls back on a falsy or unsupported
+       value — this function no longer needs to pre-resolve it.
+    """
     return StudentIdentity(
         student_id=candidate.student_id,
         child_name=candidate.child_name,
         grade=candidate.grade,
-        tap_language=locale.tap_language,
+        tap_language=candidate.tap_language,
     )

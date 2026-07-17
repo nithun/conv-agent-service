@@ -14,6 +14,7 @@ import pytest
 
 from app.core.state_machine import (
     MAX_ASR_FAILURES,
+    MAX_LANGUAGE_CHOICE_ATTEMPTS,
     MAX_REEXPLANATIONS,
     EscalationReason,
     InvalidTransition,
@@ -22,6 +23,7 @@ from app.core.state_machine import (
     escalate,
     new_session,
     record_asr_failure,
+    record_language_choice_attempt,
     record_reexplanation,
     transition,
 )
@@ -156,3 +158,54 @@ def test_session_not_expired_within_ttl():
     now = time.time()
     session.updated_at = now - (10 * 60)
     assert session.is_expired(now=now) is False
+
+
+# ---- CR-007 GAP 0: LANGUAGE_CHOICE state + record_language_choice_attempt -
+
+
+def test_language_choice_default_field_is_zero():
+    session = new_session("contact-13", "917834811114", needs_identity_confirmation=False)
+    assert session.language_choice_attempts == 0
+
+
+def test_identity_confirmation_can_transition_to_language_choice_or_greeting():
+    assert can_transition(SessionState.IDENTITY_CONFIRMATION, SessionState.LANGUAGE_CHOICE) is True
+    assert can_transition(SessionState.IDENTITY_CONFIRMATION, SessionState.GREETING) is True
+
+
+def test_language_choice_can_transition_to_greeting_or_escalated_only():
+    assert can_transition(SessionState.LANGUAGE_CHOICE, SessionState.GREETING) is True
+    assert can_transition(SessionState.LANGUAGE_CHOICE, SessionState.ESCALATED) is True
+    assert can_transition(SessionState.LANGUAGE_CHOICE, SessionState.MODE_CHOICE) is False
+
+
+def test_language_choice_transition_bumps_turn_count_like_any_other():
+    session = new_session("contact-14", "917834811114", needs_identity_confirmation=True)
+    transition(session, SessionState.LANGUAGE_CHOICE)
+    assert session.state == SessionState.LANGUAGE_CHOICE
+    assert session.turn_count == 1
+    transition(session, SessionState.GREETING)
+    assert session.state == SessionState.GREETING
+    assert session.turn_count == 2
+
+
+def test_record_language_choice_attempt_first_unmatched_does_not_exceed_cap():
+    session = new_session("contact-15", "917834811114", needs_identity_confirmation=True)
+    assert MAX_LANGUAGE_CHOICE_ATTEMPTS == 1
+    assert record_language_choice_attempt(session) is False
+    assert session.language_choice_attempts == 1
+
+
+def test_record_language_choice_attempt_second_unmatched_exceeds_cap():
+    session = new_session("contact-16", "917834811114", needs_identity_confirmation=True)
+    record_language_choice_attempt(session)
+    assert record_language_choice_attempt(session) is True
+    assert session.language_choice_attempts == 2
+
+
+def test_escalate_reachable_from_language_choice():
+    session = new_session("contact-17", "917834811114", needs_identity_confirmation=True)
+    transition(session, SessionState.LANGUAGE_CHOICE)
+    escalate(session, EscalationReason.DISTRESS)
+    assert session.state == SessionState.ESCALATED
+    assert session.escalation_reason == EscalationReason.DISTRESS

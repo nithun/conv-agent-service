@@ -169,3 +169,42 @@ async def test_session_key_is_derived_from_glific_contact_id() -> None:
     not an independently-derived identity.
     """
     assert session_key("42") == "tap_agent:session:42"
+
+
+# ---- CR-007: language_choice_attempts field ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_language_choice_attempts_round_trips(redis, settings) -> None:
+    store = RedisSessionStore(redis, settings)
+    session = new_session("contact-8", "917834811114", needs_identity_confirmation=True)
+    session.state = SessionState.LANGUAGE_CHOICE
+    session.language_choice_attempts = 1
+
+    await store.save_session(session)
+    loaded = await store.load_session("contact-8")
+
+    assert loaded is not None
+    assert loaded.state == SessionState.LANGUAGE_CHOICE
+    assert loaded.language_choice_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_language_choice_attempts_hash_field_deserializes_as_zero(
+    redis, settings
+) -> None:
+    """Forward-only migration (CR-007 Migration section): a Redis hash
+    written by pre-CR-007 code has no `language_choice_attempts` field at
+    all — HGETALL simply omits it, and the deserializer must default-
+    tolerate the missing key rather than KeyError.
+    """
+    store = RedisSessionStore(redis, settings)
+    session = new_session("contact-9", "917834811114", needs_identity_confirmation=False)
+    await store.save_session(session)
+
+    # Simulate a pre-CR-007 hash by deleting the field after the fact.
+    await redis.hdel(session_key("contact-9"), "language_choice_attempts")
+
+    loaded = await store.load_session("contact-9")
+    assert loaded is not None
+    assert loaded.language_choice_attempts == 0

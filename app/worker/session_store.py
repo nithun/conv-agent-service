@@ -6,8 +6,8 @@ Glific's own contact id, never re-derived; Glific remains sole authority
 for contact/conversation identity, R-7). Fields: `state`, `identity`
 (student_id, child_name, grade, tap_language, candidates — JSON-encoded),
 `content_reference` (JSON), `mode`, `turn_count`, `reexplanation_count`,
-`asr_failure_count`, `readiness_response`, `escalation_reason`,
-`created_at`, `updated_at`.
+`asr_failure_count`, `language_choice_attempts` (CR-007), `readiness_response`,
+`escalation_reason`, `created_at`, `updated_at`.
 
 TTL policy (AD-002 Interfaces & schemas / CR-004 Open Question 2's
 settled answer): `SESSION_TTL_SECONDS` (30 min inactivity, matching
@@ -60,6 +60,7 @@ def _serialize_session(session: SessionData) -> dict[str, str]:
         "turn_count": str(session.turn_count),
         "reexplanation_count": str(session.reexplanation_count),
         "asr_failure_count": str(session.asr_failure_count),
+        "language_choice_attempts": str(session.language_choice_attempts),
         "readiness_response": session.readiness_response or "",
         "resolved_locale": json.dumps(session.resolved_locale)
         if session.resolved_locale is not None
@@ -92,6 +93,10 @@ def _deserialize_session(fields: dict[str, str]) -> SessionData:
         turn_count=int(fields["turn_count"]),
         reexplanation_count=int(fields["reexplanation_count"]),
         asr_failure_count=int(fields["asr_failure_count"]),
+        # CR-007: tolerate a pre-existing Redis hash serialized before this
+        # field existed — `.get()` with a "0" default, same discipline as
+        # every other scalar int field here (no migration needed).
+        language_choice_attempts=int(fields.get("language_choice_attempts") or "0"),
         readiness_response=fields.get("readiness_response") or None,
         resolved_locale=resolved_locale,
         escalation_reason=escalation_reason,

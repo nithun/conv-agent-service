@@ -31,6 +31,10 @@ from app.tools.lms_mock import MockTapLmsClient
 
 EXPECTED_MATRIX: dict[SessionState, list[dict]] = {
     SessionState.IDENTITY_CONFIRMATION: [],
+    # CR-007: LANGUAGE_CHOICE is handled entirely deterministically in
+    # turn_processor.py (never reaches run_turn/_tools_for_state) — no
+    # tools bound, same as every other pre-content-intro state.
+    SessionState.LANGUAGE_CHOICE: [],
     SessionState.GREETING: [],
     SessionState.MODE_CHOICE: [],
     SessionState.CONTENT_INTRO: [GET_NEXT_CONTENT_TOOL],
