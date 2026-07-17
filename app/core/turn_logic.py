@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.config.language_map import resolve_locale
+from app.config.scripted_replies import get_scripted_reply
 from app.core.guardrails_checks import (
     detect_distress,
     detect_doubt_signal,
@@ -53,17 +54,14 @@ from app.tools.lms_client import LmsApiError
 
 logger = logging.getLogger("app.core.turn_logic")
 
-FALLBACK_REPLY = "Sorry, I'm having a little trouble right now. Let's try again in a moment."
-DISTRESS_CLOSE_REPLY = (
-    "Thank you for telling me. I'm going to get a grown-up to help you with this right now. "
-    "You did great today."
-)
-CLARIFICATION_REPLY = "I didn't catch that clearly. Can you say it once again?"
-ASR_FALLBACK_REPLY = "Let's switch to typing for now — you can type your reply instead."
-UNRESOLVED_DOUBT_ESCALATION_REPLY = (
-    "It looks like this one's tricky today. I'm going to get a grown-up to help explain it "
-    "properly. You did great trying!"
-)
+# CR-007 GAP 1: these five reply "constants" are no longer literal English
+# strings — every call site below resolves the CURRENT scripted text via
+# get_scripted_reply(key, tap_language) at the moment it's needed, keyed by
+# the session's resolved language (falls back to English when
+# tap_language is falsy/unrecognized/missing that key — see
+# app/config/scripted_replies.py). The English copy itself lives ONLY in
+# app/config/scripted_replies.yaml now (AC-2's reachability check asserts
+# no literal duplicate survives here).
 
 # The MODEL_ROUTES key for this main turn loop — resolved via ModelRouter,
 # never a hardcoded model string (L-004/AC-1). See app/llm/routes.py.
@@ -308,7 +306,8 @@ async def run_turn(
     # (activity_in_progress, doubt_clearing, etc.).
     if user_input and detect_distress(user_input, session.identity.tap_language or "English"):
         escalate(session, EscalationReason.DISTRESS)
-        return TurnOutcome(reply_text=DISTRESS_CLOSE_REPLY, session=session, escalated=True)
+        reply_text = get_scripted_reply("distress_close", session.identity.tap_language)
+        return TurnOutcome(reply_text=reply_text, session=session, escalated=True)
 
     # Pre-LLM off-turn check — deterministic keyword match, never
     # prompt-only. Short-circuits to the scripted acknowledge-then-redirect
@@ -321,9 +320,10 @@ async def run_turn(
     # pipeline, not just unit-tested in isolation.
     doubt_escalation = _maybe_enter_or_advance_doubt_clearing(session, user_input)
     if doubt_escalation is not None:
-        return TurnOutcome(
-            reply_text=UNRESOLVED_DOUBT_ESCALATION_REPLY, session=session, escalated=True
+        reply_text = get_scripted_reply(
+            "unresolved_doubt_escalation", session.identity.tap_language
         )
+        return TurnOutcome(reply_text=reply_text, session=session, escalated=True)
 
     tool_names: list[str] = []
     tool_summaries: list[str] = []
@@ -342,7 +342,8 @@ async def run_turn(
             content = await lms_client.get_next_content(session.identity.student_id)
         except LmsApiError as exc:
             logger.warning("content prefetch failed: %s", exc)
-            return TurnOutcome(reply_text=FALLBACK_REPLY, session=session)
+            fallback_reply = get_scripted_reply("fallback", session.identity.tap_language)
+            return TurnOutcome(reply_text=fallback_reply, session=session)
         if content is not None:
             summary = {
                 "content_id": content.content_id,
@@ -426,8 +427,9 @@ async def run_turn(
             # LMS failure mid-turn: degrade to the fallback reply rather than
             # crash the turn or invent LMS data.
             logger.warning("LMS tool call %s failed: %s", call.name, exc)
+            fallback_reply = get_scripted_reply("fallback", session.identity.tap_language)
             return TurnOutcome(
-                reply_text=FALLBACK_REPLY, session=session, tool_calls_made=tool_names
+                reply_text=fallback_reply, session=session, tool_calls_made=tool_names
             )
 
     reply_text = result.text.strip()
@@ -452,7 +454,7 @@ async def run_turn(
 
     if not reply_text:
         logger.warning("model returned empty reply with no usable tool round; falling back")
-    reply_text = reply_text or FALLBACK_REPLY
+    reply_text = reply_text or get_scripted_reply("fallback", session.identity.tap_language)
 
     allowed_fields = set()
     if session.content_reference:
@@ -490,14 +492,16 @@ async def run_turn(
             ],
             [],
         )
-        reply_text = rewrite.text.strip() or FALLBACK_REPLY
+        reply_text = rewrite.text.strip() or get_scripted_reply(
+            "fallback", session.identity.tap_language
+        )
         recheck_failures = run_all_validators(reply_text, allowed_content_fields=allowed_fields)
         if recheck_failures:
             logger.warning(
                 "guardrails rejected rewrite (%s); falling back",
                 ", ".join(f.value for f in recheck_failures),
             )
-            reply_text = FALLBACK_REPLY
+            reply_text = get_scripted_reply("fallback", session.identity.tap_language)
 
     advanced_to = _maybe_advance_state(session, advance_eligible)
 
@@ -522,10 +526,7 @@ def handle_off_turn(session: SessionData) -> str:
     repeat the prior instruction verbatim. Does not advance turn-relevant
     state fields (caller should not call advance_state for an off-turn reply).
     """
-    return (
-        "I understand — let's come back to that in a moment. "
-        "Shall we continue with today's activity?"
-    )
+    return get_scripted_reply("off_turn_nudge", session.identity.tap_language)
 
 
 def handle_low_confidence_asr(session: SessionData) -> tuple[str, bool]:
@@ -535,8 +536,8 @@ def handle_low_confidence_asr(session: SessionData) -> tuple[str, bool]:
     """
     should_fallback = record_asr_failure(session)
     if should_fallback:
-        return ASR_FALLBACK_REPLY, True
-    return CLARIFICATION_REPLY, False
+        return get_scripted_reply("asr_fallback", session.identity.tap_language), True
+    return get_scripted_reply("clarification", session.identity.tap_language), False
 
 
 def handle_doubt_reexplanation(session: SessionData) -> EscalationReason | None:

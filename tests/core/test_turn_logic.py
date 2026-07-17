@@ -460,6 +460,94 @@ async def test_doubt_clearing_third_unresolved_doubt_escalates_without_model_cal
     assert outcome.session.escalation_reason == EscalationReason.UNRESOLVED_DOUBT
 
 
+# ---- CR-007: scripted replies resolve per-tap_language at every call site -
+#
+# Each of the 5 former module-level string constants (FALLBACK_REPLY,
+# DISTRESS_CLOSE_REPLY, CLARIFICATION_REPLY, ASR_FALLBACK_REPLY,
+# UNRESOLVED_DOUBT_ESCALATION_REPLY) plus handle_off_turn now resolve via
+# get_scripted_reply(key, session.identity.tap_language) — these tests pin
+# a NON-English (Hindi) session at each existing call site and assert the
+# Hindi text ships, not a silent English default.
+
+
+@pytest.mark.asyncio
+async def test_distress_short_circuit_replies_in_the_sessions_language():
+    # detect_distress resolves patterns PER language (get_distress_patterns)
+    # — a Hindi session is checked against the Hindi pattern list, not the
+    # English one, so the distress-bearing input here must itself be Hindi
+    # (mirrors distress_keywords.yaml's own Hindi abuse-category pattern).
+    from app.config.scripted_replies import get_scripted_reply
+
+    session = _session_at(SessionState.ACTIVITY_IN_PROGRESS, tap_language="Hindi")
+    router = FakeModelRouter(scripted_result=ModelResponse(text="should never be reached"))
+    lms = MockTapLmsClient()
+
+    outcome = await run_turn(
+        session=session, user_input="mujhe maar rahe hain", model_router=router, lms_client=lms
+    )
+    assert outcome.reply_text == get_scripted_reply("distress_close", "Hindi")
+
+
+@pytest.mark.asyncio
+async def test_unresolved_doubt_escalation_replies_in_the_sessions_language():
+    from app.config.scripted_replies import get_scripted_reply
+
+    session = _session_at(SessionState.DOUBT_CLEARING, tap_language="Hindi")
+    session.reexplanation_count = 2
+
+    class UnusedModelRouter:
+        async def generate(self, *a, **kw):
+            raise AssertionError("model must not be called on the escalating doubt turn")
+
+    lms = MockTapLmsClient()
+    outcome = await run_turn(
+        session=session,
+        user_input="I really still don't get it",
+        model_router=UnusedModelRouter(),
+        lms_client=lms,
+    )
+    assert outcome.reply_text == get_scripted_reply("unresolved_doubt_escalation", "Hindi")
+
+
+def test_handle_off_turn_replies_in_the_sessions_language():
+    from app.config.scripted_replies import get_scripted_reply
+
+    session = _session_at(SessionState.CONTENT_INTRO, tap_language="Hindi")
+    assert handle_off_turn(session) == get_scripted_reply("off_turn_nudge", "Hindi")
+
+
+def test_handle_low_confidence_asr_replies_in_the_sessions_language():
+    from app.config.scripted_replies import get_scripted_reply
+    from app.core.turn_logic import handle_low_confidence_asr
+
+    session = _session_at(SessionState.MODE_CHOICE, tap_language="Hindi")
+    reply, should_fallback = handle_low_confidence_asr(session)
+    assert should_fallback is False
+    assert reply == get_scripted_reply("clarification", "Hindi")
+
+    reply2, should_fallback2 = handle_low_confidence_asr(session)
+    assert should_fallback2 is True
+    assert reply2 == get_scripted_reply("asr_fallback", "Hindi")
+
+
+@pytest.mark.asyncio
+async def test_content_prefetch_fallback_replies_in_the_sessions_language():
+    from app.config.scripted_replies import get_scripted_reply
+    from app.tools.lms_client import LmsApiError
+
+    session = _session_at(SessionState.CONTENT_INTRO, tap_language="Hindi")
+    router = FakeModelRouter(scripted_result=ModelResponse(text="unused"))
+
+    class FailingLms(MockTapLmsClient):
+        async def get_next_content(self, student_id):
+            raise LmsApiError("simulated LMS outage")
+
+    outcome = await run_turn(
+        session=session, user_input="ready", model_router=router, lms_client=FailingLms()
+    )
+    assert outcome.reply_text == get_scripted_reply("fallback", "Hindi")
+
+
 # ---- guardrail pass wiring (code-review fix, 2026-07-05, Finding 2) --------
 #
 # Confirms `run_turn` is actually wired to `app.guardrails.validators
@@ -524,10 +612,13 @@ async def test_run_turn_regenerates_once_on_a_guardrail_violation_then_ships_the
 @pytest.mark.asyncio
 async def test_run_turn_falls_back_when_the_rewrite_still_violates() -> None:
     """If the corrective regeneration STILL violates a validator, run_turn
-    ships FALLBACK_REPLY rather than a known-violating reply — never ship a
-    violating reply, even after one regeneration attempt.
+    ships the scripted "fallback" reply rather than a known-violating
+    reply — never ship a violating reply, even after one regeneration
+    attempt. CR-007: FALLBACK_REPLY is no longer a module constant — the
+    English text now lives solely in scripted_replies.yaml, reached via
+    get_scripted_reply("fallback", tap_language).
     """
-    from app.core.turn_logic import FALLBACK_REPLY
+    from app.config.scripted_replies import get_scripted_reply
 
     session = _session_at(SessionState.GREETING)
     still_too_long = "One. Two. Three. Four. Five sentences here now."
@@ -544,7 +635,7 @@ async def test_run_turn_falls_back_when_the_rewrite_still_violates() -> None:
     )
 
     assert len(router.calls) == 2
-    assert outcome.reply_text == FALLBACK_REPLY
+    assert outcome.reply_text == get_scripted_reply("fallback", session.identity.tap_language)
 
 
 @pytest.mark.asyncio

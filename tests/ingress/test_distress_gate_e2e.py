@@ -125,6 +125,41 @@ async def test_distress_at_mode_choice_escalates(client_with_escalation_worker) 
 
 
 @pytest.mark.asyncio
+async def test_distress_close_reply_is_sent_in_the_sessions_language(
+    client_with_escalation_worker,
+) -> None:
+    """CR-007 GAP 1: distress_gate.py's close reply is no longer the
+    hardcoded English DISTRESS_CLOSE_REPLY constant — it resolves via
+    get_scripted_reply("distress_close", session.identity.tap_language).
+    """
+    from app.config.scripted_replies import get_scripted_reply
+
+    client, fake_glific = client_with_escalation_worker
+    session_store = client._transport.app.state.session_store
+
+    from app.core.state_machine import StudentIdentity, new_session
+
+    session = new_session("14", "919999999999", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(student_id="STU-1", child_name="Aarav", tap_language="Hindi")
+    await session_store.save_session(session)
+
+    payload = {
+        "contact_id": "14",
+        "phone": "919999999999",
+        "message_id": "d5",
+        "text": "I want to kill myself",
+    }
+    response = await client.post("/webhook/glific", json=payload)
+    assert response.status_code == 200
+
+    drained = await client_with_escalation_worker.drain_escalation()
+    assert drained is True
+
+    assert len(fake_glific.sent_texts) == 1
+    assert fake_glific.sent_texts[0][1] == get_scripted_reply("distress_close", "Hindi")
+
+
+@pytest.mark.asyncio
 async def test_distress_reply_always_sent_even_if_ticket_creation_fails(
     client_with_escalation_worker,
 ) -> None:

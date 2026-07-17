@@ -15,6 +15,7 @@ import pytest
 import respx
 from httpx import Response
 
+from app.config.language_map import all_entries
 from app.config.settings import Settings
 from app.core.state_machine import EscalationReason, SessionState, new_session
 from app.ingress.glific_payload import GlificWebhookPayload
@@ -156,8 +157,15 @@ async def test_first_message_from_new_contact_asks_for_name(session_store) -> No
 
 @pytest.mark.asyncio
 async def test_single_match_identity_resolves_and_greets(session_store) -> None:
+    # CR-007 AC-6 (self-retiring skip): the DEFAULT_FIXTURE_STUDENTS fixture
+    # gives Aarav tap_language="Hindi" (a real, LMS-supplied language) — so
+    # identity resolution should skip LANGUAGE_CHOICE entirely and go
+    # straight to GREETING with the Hindi greeting_direct reply, exactly
+    # like today's single-match path already does.
+    from app.config.scripted_replies import get_scripted_reply
+
     glific = FakeGlificSender()
-    lms = MockTapLmsClient()  # 917834811114 -> single candidate "Aarav"
+    lms = MockTapLmsClient()  # 917834811114 -> single candidate "Aarav" (Hindi)
     router = FakeModelRouter()
 
     # First turn: bootstraps identity_confirmation.
@@ -179,8 +187,177 @@ async def test_single_match_identity_resolves_and_greets(session_store) -> None:
 
     assert result.session is not None
     assert result.session.identity.child_name == "Aarav"
+    assert result.session.identity.tap_language == "Hindi"
     assert result.session.state == SessionState.GREETING
-    assert "feeling" in glific.sent_texts[-1][1].lower()
+    expected_reply = get_scripted_reply("greeting_direct", "Hindi").format(child_name="Aarav")
+    assert glific.sent_texts[-1][1] == expected_reply
+
+
+@pytest.mark.asyncio
+async def test_single_match_with_no_lms_language_enters_language_choice_then_resolves(
+    session_store,
+) -> None:
+    # CR-007 AC-5 (the language-choice turn, today's live-real case: the
+    # LMS returns no language at all). A dedicated fixture student with
+    # tap_language=None (distinct from the DEFAULT_FIXTURE_STUDENTS' Aarav,
+    # who already carries a real language) drives the full happy path:
+    # ask-turn -> matched reply -> per-language greeting.
+    from app.config.scripted_replies import get_scripted_reply
+    from app.tools.lms_client import StudentCandidate
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient(
+        students={
+            "911111111111": [
+                StudentCandidate(
+                    student_id="STU-100", child_name="Priya", grade="3", tap_language=None
+                )
+            ]
+        }
+    )
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="lc1", phone="911111111111", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    result = await process_turn(
+        _payload(contact_id="lc1", phone="911111111111", text="Priya"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.session is not None
+    assert result.session.state == SessionState.LANGUAGE_CHOICE
+    assert result.session.identity.tap_language is None
+    from app.config.scripted_replies import language_choice_prompt
+
+    assert glific.sent_texts[-1][1] == language_choice_prompt()
+
+    # Child answers with a native-script/romanized language name.
+    result2 = await process_turn(
+        _payload(contact_id="lc1", phone="911111111111", text="हिंदी"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result2.session is not None
+    assert result2.session.identity.tap_language == "Hindi"
+    assert result2.session.state == SessionState.GREETING
+    expected_reply = get_scripted_reply("greeting_direct", "Hindi").format(child_name="Priya")
+    assert glific.sent_texts[-1][1] == expected_reply
+
+
+@pytest.mark.asyncio
+async def test_language_choice_reasks_once_then_defaults_to_english(session_store) -> None:
+    from app.config.scripted_replies import get_scripted_reply, language_choice_reask
+    from app.tools.lms_client import StudentCandidate
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient(
+        students={
+            "922222222222": [
+                StudentCandidate(
+                    student_id="STU-101", child_name="Rahim", grade="3", tap_language=None
+                )
+            ]
+        }
+    )
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="lc2", phone="922222222222", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    await process_turn(
+        _payload(contact_id="lc2", phone="922222222222", text="Rahim"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    # First unmatched reply -> one scripted re-ask, stays in LANGUAGE_CHOICE.
+    result1 = await process_turn(
+        _payload(contact_id="lc2", phone="922222222222", text="banana"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result1.session is not None
+    assert result1.session.state == SessionState.LANGUAGE_CHOICE
+    assert result1.session.language_choice_attempts == 1
+    assert glific.sent_texts[-1][1] == language_choice_reask()
+
+    # Second unmatched reply -> defaults to English, proceeds to GREETING,
+    # never stalls the conversation (AC-5).
+    result2 = await process_turn(
+        _payload(contact_id="lc2", phone="922222222222", text="still not a language"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result2.session is not None
+    assert result2.session.identity.tap_language == "English"
+    assert result2.session.state == SessionState.GREETING
+    expected_reply = get_scripted_reply("greeting_direct", "English").format(child_name="Rahim")
+    assert glific.sent_texts[-1][1] == expected_reply
+
+
+@pytest.mark.asyncio
+async def test_multi_candidate_confirm_with_language_sets_tap_language_and_skips_language_choice(
+    session_store,
+) -> None:
+    # CR-007 AC-6/AC-7 through the REAL process_turn pipeline: Kavya's
+    # fixture candidate carries tap_language="Tamil" — confirm_identity's
+    # in-scope fix should populate session.identity.tap_language and the
+    # self-retiring check should skip LANGUAGE_CHOICE.
+    from app.config.scripted_replies import get_scripted_reply
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()  # 919999999999 -> Meera (English), Kavya (Tamil)
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="mc1", phone="919999999999", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    await process_turn(
+        _payload(contact_id="mc1", phone="919999999999", text="Meera"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    result = await process_turn(
+        _payload(contact_id="mc1", phone="919999999999", text="Kavya"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.session is not None
+    assert result.session.identity.tap_language == "Tamil"
+    assert result.session.state == SessionState.GREETING
+    expected_reply = get_scripted_reply("greeting_candidate_confirm", "Tamil").format(
+        child_name="Kavya"
+    )
+    assert glific.sent_texts[-1][1] == expected_reply
 
 
 @pytest.mark.asyncio
@@ -831,6 +1008,7 @@ async def test_voice_mode_reply_synthesizes_and_sends_audio(session_store, tmp_p
     assert len(glific.sent_audio) == 1
     assert glific.sent_audio[0][0] == "v1"
     assert glific.sent_audio[0][1].startswith("http://localhost:8001/media/")
+    assert glific.sent_audio[0][1].endswith(".mp3")  # CR-007 GAP 3
     assert len(speech.synthesize_calls) == 1
     assert speech.synthesize_calls[0][0] == "Great job today!"
 
@@ -985,6 +1163,93 @@ async def test_voice_mode_public_base_url_unset_propagates_loudly(session_store)
     assert glific.sent_audio == []
 
 
+# ---- CR-007 AC-4: per-language mode-choice matching through process_turn --
+#
+# Test input is DERIVED from scripted_replies.yaml's own per-language
+# keyword lists (via get_mode_choice_keywords) rather than hand-composed
+# native-script sentences — this proves the wiring (the RIGHT list is
+# consulted for the session's language) without any transliteration/
+# encoding risk in the test itself.
+
+
+def _mode_choice_session(contact_id: str, tap_language: str | None):
+    from app.core.state_machine import StudentIdentity, new_session, transition
+
+    session = new_session(contact_id, "917834811114", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(
+        student_id="STU-001", child_name="Aarav", tap_language=tap_language
+    )
+    transition(session, SessionState.MODE_CHOICE)
+    return session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tap_language", list(all_entries().keys()))
+async def test_mode_choice_matches_native_keywords_per_language(
+    session_store, tap_language
+) -> None:
+    # Reads the RAW per-language block (not the English-unioned
+    # get_mode_choice_keywords() result) so the input is guaranteed to be
+    # the language's OWN keyword, not English's "voice"/"text" sneaking in
+    # via the union at index 0 — that would make this test pass trivially
+    # without ever exercising the per-language list.
+    import app.config.scripted_replies as scripted_replies_module
+
+    raw_block = scripted_replies_module._load()[tap_language]
+    native_voice_keyword = raw_block["mode_voice_keywords"][0]
+    native_text_keyword = raw_block["mode_text_keywords"][0]
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    voice_session = _mode_choice_session(f"mv-{tap_language}", tap_language)
+    await session_store.save_session(voice_session)
+    result = await process_turn(
+        _payload(contact_id=f"mv-{tap_language}", text=native_voice_keyword),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result.session is not None
+    assert result.session.mode == "voice"
+
+    text_session = _mode_choice_session(f"mt-{tap_language}", tap_language)
+    await session_store.save_session(text_session)
+    result2 = await process_turn(
+        _payload(contact_id=f"mt-{tap_language}", text=native_text_keyword),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result2.session is not None
+    assert result2.session.mode == "text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tap_language", ["Hindi", "Tamil", "Punjabi", "Urdu", None])
+async def test_mode_choice_english_keywords_always_work_regardless_of_session_language(
+    session_store, tap_language
+) -> None:
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    session = _mode_choice_session(f"me-{tap_language}", tap_language)
+    await session_store.save_session(session)
+    result = await process_turn(
+        _payload(contact_id=f"me-{tap_language}", text="voice"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result.session is not None
+    assert result.session.mode == "voice"
+
+
 # ---- L-011/P-005 static reachability check --------------------------------
 #
 # Mirrors tests/core/test_isolation.py's AST-walk idiom: parses
@@ -1023,6 +1288,23 @@ def test_process_turn_module_call_graph_reaches_every_br_004_call_site() -> None
         "detect_distress",
         "synthesize_and_store",
         "send_audio",
+    ):
+        assert symbol in called, f"{symbol} is not called anywhere in turn_processor.py"
+
+
+def test_process_turn_module_call_graph_reaches_every_cr_007_call_site() -> None:
+    """CR-007: the LANGUAGE_CHOICE branch and every per-language scripted
+    reply call site are actually present in turn_processor.py's call
+    graph — not just unit-tested in isolation (P-005/L-011).
+    """
+    called = _called_names(TURN_PROCESSOR_PATH)
+    for symbol in (
+        "get_scripted_reply",
+        "get_mode_choice_keywords",
+        "get_language_choice_keywords",
+        "record_language_choice_attempt",
+        "language_choice_prompt",
+        "language_choice_reask",
     ):
         assert symbol in called, f"{symbol} is not called anywhere in turn_processor.py"
 

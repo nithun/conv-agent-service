@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.config.scripted_replies import get_scripted_reply
 from app.core.state_machine import (
     EscalationReason,
     SessionData,
@@ -26,7 +27,6 @@ from app.core.state_machine import (
     escalate,
     new_session,
 )
-from app.core.turn_logic import DISTRESS_CLOSE_REPLY
 from app.ingress.glific_payload import GlificWebhookPayload
 from app.worker.escalation import open_ticket_for_escalation
 from app.worker.session_store import RedisSessionStore
@@ -60,7 +60,8 @@ async def _escalate_for_distress(
     escalate(session, EscalationReason.DISTRESS)
     await session_store.save_session(session)
 
-    await glific_client.send_text(contact_id, DISTRESS_CLOSE_REPLY)
+    reply_text = get_scripted_reply("distress_close", session.identity.tap_language)
+    await glific_client.send_text(contact_id, reply_text)
 
     await open_ticket_for_escalation(contact_id, session, glific_client)
 

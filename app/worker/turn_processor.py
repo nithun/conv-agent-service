@@ -14,10 +14,20 @@ low-confidence one — before any state handling, via the same
 state machine. The layering is deliberate, not redundant — do not
 "simplify" either gate away.
 
-Every state-branch reachable here (identity_confirmation, greeting,
-mode_choice, and the run_turn-driven states) is deterministic/structural —
-"never an LLM's own narrative sense of progress" — mirroring tap-buddy's
-`_process_turn` decision tree.
+Every state-branch reachable here (identity_confirmation, language_choice,
+greeting, mode_choice, and the run_turn-driven states) is
+deterministic/structural — "never an LLM's own narrative sense of
+progress" — mirroring tap-buddy's `_process_turn` decision tree.
+
+CR-007: every scripted (non-LLM) reply below is sourced from
+`app/config/scripted_replies.py::get_scripted_reply`, keyed by
+`session.identity.tap_language`, EXCEPT the four pre-identity-resolution
+literals (each marked "PRE-IDENTITY LITERAL" at its call site) — those
+genuinely cannot know the child's language before identity resolves. GAP 0
+(the LANGUAGE_CHOICE state) is the scripted, language-agnostic ask-turn
+that fires whenever identity resolution didn't yield a `tap_language` —
+self-retiring once the LMS starts returning one (see
+`app/core/identity.py`).
 """
 
 from __future__ import annotations
@@ -26,6 +36,13 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.config.scripted_replies import (
+    get_language_choice_keywords,
+    get_mode_choice_keywords,
+    get_scripted_reply,
+    language_choice_prompt,
+    language_choice_reask,
+)
 from app.config.settings import Settings
 from app.core.guardrails_checks import detect_distress
 from app.core.identity import confirm_identity, resolve_identity_by_name
@@ -35,6 +52,7 @@ from app.core.state_machine import (
     SessionState,
     escalate,
     new_session,
+    record_language_choice_attempt,
     reset_asr_failures,
     transition,
 )
@@ -248,6 +266,9 @@ async def process_turn(
     if session is None:
         # First message from this contact — ask for their name before any
         # LMS call (get_student_by_phone_and_name requires buddy_name).
+        # PRE-IDENTITY LITERAL (CR-007 Proposed behavior, #1 of 4): the
+        # child's language is unknown until identity resolves — this string
+        # genuinely cannot be looked up by tap_language at send time.
         session = new_session(payload.contact_id, payload.phone, needs_identity_confirmation=True)
         await session_store.save_session(session)
         await glific_client.send_text(payload.contact_id, "Hi! Before we start, what's your name?")
@@ -258,36 +279,117 @@ async def process_turn(
             payload.contact_id, payload.phone, user_text.strip(), lms_client
         )
         session = resolution.session
-        await session_store.save_session(session)
         if resolution.needs_confirmation:
+            await session_store.save_session(session)
+            # PRE-IDENTITY LITERAL (#2 of 4): a multi-candidate household can
+            # have candidates with DIFFERENT languages — there is no single
+            # language to pick until one candidate is confirmed.
             names = ", ".join(c["child_name"] for c in resolution.candidates)
             await glific_client.send_text(
                 payload.contact_id, f"I found a few names: {names}. Which one is you?"
             )
             return TurnProcessingResult(handled=True, session=session, reply_sent=True)
         if not resolution.candidates:
+            await session_store.save_session(session)
+            # PRE-IDENTITY LITERAL (#3 of 4): no candidate resolved at all —
+            # still no identity, so still no language to look up by.
             await glific_client.send_text(
                 payload.contact_id,
                 "I couldn't find that name for this phone number. Can you check the spelling?",
             )
             return TurnProcessingResult(handled=True, session=session, reply_sent=True)
-        reply = (
-            f"Hi {session.identity.child_name}! How are you feeling today "
-            "— excited, okay, or tired?"
+        # Single unambiguous match. GAP 0 (CR-007, root cause): the LMS
+        # never actually returns a language today (grep-confirmed against
+        # the live tap_lms.api.get_student_by_phone_and_name response
+        # shape), so tap_language is almost always falsy here — enter the
+        # scripted, language-agnostic LANGUAGE_CHOICE turn instead of an
+        # English-only greeting. Self-retiring: once the LMS starts
+        # returning a language, this branch is unreachable for that
+        # contact (tap_language truthy -> straight to GREETING, exactly
+        # today's behavior).
+        if not session.identity.tap_language:
+            session.state = SessionState.LANGUAGE_CHOICE
+            await session_store.save_session(session)
+            await glific_client.send_text(payload.contact_id, language_choice_prompt())
+            return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+        await session_store.save_session(session)
+        reply = get_scripted_reply("greeting_direct", session.identity.tap_language).format(
+            child_name=session.identity.child_name or "there"
         )
         await glific_client.send_text(payload.contact_id, reply)
         return TurnProcessingResult(handled=True, session=session, reply_sent=True)
 
     if session.state == SessionState.IDENTITY_CONFIRMATION and session.identity.candidates:
         if confirm_identity(session, user_text.strip()):
-            transition(session, SessionState.GREETING)
-            await session_store.save_session(session)
-            reply = f"Great, hi {session.identity.child_name}! How are you feeling today?"
-            await glific_client.send_text(payload.contact_id, reply)
+            # confirm_identity (CR-007 in-scope fix) populates tap_language
+            # from the matched candidate when the LMS supplied one for THIS
+            # candidate — same self-retiring GAP 0 check as the single-match
+            # branch above.
+            if session.identity.tap_language:
+                transition(session, SessionState.GREETING)
+                await session_store.save_session(session)
+                reply = get_scripted_reply(
+                    "greeting_candidate_confirm", session.identity.tap_language
+                ).format(child_name=session.identity.child_name or "there")
+                await glific_client.send_text(payload.contact_id, reply)
+            else:
+                transition(session, SessionState.LANGUAGE_CHOICE)
+                await session_store.save_session(session)
+                await glific_client.send_text(payload.contact_id, language_choice_prompt())
         else:
+            await session_store.save_session(session)
+            # PRE-IDENTITY LITERAL (#4 of 4): a failed candidate confirm is
+            # still pre-identity — the child hasn't been matched to any
+            # candidate yet, so (per #2 above) there is still no single
+            # language to look this up by.
             await glific_client.send_text(
                 payload.contact_id, "Sorry, I didn't recognize that name — can you try again?"
             )
+        return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+
+    # CR-007 GAP 0: the language-choice turn. Matches user_text against
+    # every language's language_name_keywords, in language_map.yaml's
+    # declared order (English first) — first substring match wins
+    # (documented, deterministic; see CR-007 Edge cases). One scripted
+    # re-ask on the first non-match; on the second non-match, defaults to
+    # English and proceeds — never blocks the conversation.
+    if session.state == SessionState.LANGUAGE_CHOICE:
+        lowered = user_text.strip().lower()
+        matched_language: str | None = None
+        for language, keywords in get_language_choice_keywords():
+            if any(kw.lower() in lowered for kw in keywords):
+                matched_language = language
+                break
+
+        if matched_language is not None:
+            session.identity.tap_language = matched_language
+            transition(session, SessionState.GREETING)
+            await session_store.save_session(session)
+            reply = get_scripted_reply("greeting_direct", session.identity.tap_language).format(
+                child_name=session.identity.child_name or "there"
+            )
+            await glific_client.send_text(payload.contact_id, reply)
+            return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+
+        if record_language_choice_attempt(session):
+            logger.warning(
+                "language_choice: no match after %d unmatched repl%s for contact=%s; "
+                "defaulting to English",
+                session.language_choice_attempts,
+                "y" if session.language_choice_attempts == 1 else "ies",
+                payload.contact_id,
+            )
+            session.identity.tap_language = "English"
+            transition(session, SessionState.GREETING)
+            await session_store.save_session(session)
+            reply = get_scripted_reply("greeting_direct", session.identity.tap_language).format(
+                child_name=session.identity.child_name or "there"
+            )
+            await glific_client.send_text(payload.contact_id, reply)
+            return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+
+        await session_store.save_session(session)
+        await glific_client.send_text(payload.contact_id, language_choice_reask())
         return TurnProcessingResult(handled=True, session=session, reply_sent=True)
 
     # Turn 2's readiness reply: the answer itself is stored raw (no
@@ -297,26 +399,29 @@ async def process_turn(
         session.readiness_response = user_text.strip()
         transition(session, SessionState.MODE_CHOICE)
         await session_store.save_session(session)
-        reply = (
-            "Great. We can talk in voice, or you can type if that feels easier. "
-            "What would you like?"
-        )
+        reply = get_scripted_reply("readiness_mode_choice", session.identity.tap_language)
         await glific_client.send_text(payload.contact_id, reply)
         return TurnProcessingResult(handled=True, session=session, reply_sent=True)
 
     # Turn 3's mode choice: capture "voice"/"text" verbatim from the
-    # child's reply (the mode itself isn't model-decided).
+    # child's reply (the mode itself isn't model-decided). Per-language
+    # keyword matching (CR-007 GAP 2) — the session language's own
+    # voice/text keyword lists, unioned with English's (English always
+    # works, regardless of the session's resolved language). Voice is
+    # checked before text/type, preserving today's implicit precedence on
+    # an ambiguous reply (documented in CR-007 Edge cases).
     if session.state == SessionState.MODE_CHOICE and session.mode is None:
         lowered = user_text.strip().lower()
-        if "voice" in lowered:
+        mode_keywords = get_mode_choice_keywords(session.identity.tap_language)
+        if any(kw.lower() in lowered for kw in mode_keywords["voice"]):
             session.mode = "voice"
-        elif "text" in lowered or "type" in lowered:
+        elif any(kw.lower() in lowered for kw in mode_keywords["text"]):
             session.mode = "text"
         if session.mode is not None:
             transition(session, SessionState.CONTENT_INTRO)
             await session_store.save_session(session)
         else:
-            reply = "Would you like to continue in voice, or by typing?"
+            reply = get_scripted_reply("mode_choice_reask", session.identity.tap_language)
             await glific_client.send_text(payload.contact_id, reply)
             return TurnProcessingResult(handled=True, session=session, reply_sent=True)
 
