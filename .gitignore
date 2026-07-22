@@ -9,3 +9,9 @@ __pycache__/
 
 # TTS media files (runtime artifacts, served via /media/{token})
 data/
+
+# GCP service-account keys — placed by the operator for Vertex/STT-TTS (F-040).
+# Never commit: ADR-012 R-5 found these were NOT ignored while F-040 was about
+# to have one placed in this directory.
+gcp-sa*.json
+secrets/
