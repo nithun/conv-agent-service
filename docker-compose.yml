@@ -142,7 +142,9 @@ services:
       LANGFUSE_INIT_USER_NAME: Nithun
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set in .env}
 
-  # Self-hosted LiteLLM proxy (open source) — LOCAL DEV ONLY (F-020). An
+  # Self-hosted LiteLLM proxy (open source) — local dev AND the AD-004 GCP
+  # VM deployment (the "LOCAL DEV ONLY (F-020)" scoping was falsified by
+  # AD-004, corrected 2026-07-22 per F-046(b)/L-013). An
   # OpenAI-compatible gateway fronting Vertex AI with the operator's
   # existing GCP service account, so a REAL model call can run + be traced
   # without an OpenRouter account. The app opts in via .env:
