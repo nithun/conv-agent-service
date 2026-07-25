@@ -14,16 +14,20 @@ one when absent (dedupe, Task 5, still protects against true BSP/HTTP
 retries which resend an identical explicit id).
 
 Security-relevant coupling (CR-010/architecture-reviewer C-6.1,
-2026-07-25): `app.ingress.contact_allowlist.verify_contact_allowlisted`
-matches its allowlist against the EXACT `contact_id`/`phone` strings this
-function returns — the simulator `_N` phone-suffix stripping, the
+2026-07-25; DORMANT since CR-011/ADR-013, 2026-07-25):
+`app.ingress.contact_allowlist.verify_contact_allowlisted` matches its
+allowlist against the EXACT `contact_id`/`phone` strings this function
+returns — the simulator `_N` phone-suffix stripping, the
 `@`-expression-as-absent handling, and the `contact`-object fallback path
-are therefore now load-bearing for WHO may reach the agent, not just for
-LMS lookup correctness. A future edit here that changes any of those three
-behaviors silently widens or narrows the contact allowlist — see
+were load-bearing for WHO may reach the agent while that dependency was
+wired onto `POST /webhook/glific`. CR-011 removed that `Depends()` entry
+(the keyword-triggered conv-AI test flow supersedes the closed allowlist,
+§Proposed behavior 5) — the module, and this coupling, stay dormant, not
+deleted, for reversibility. A future re-enable of the allowlist gate must
+still treat these three parser behaviors as load-bearing; see
 `tests/ingress/test_contact_allowlist.py`'s parser-normalization
-regression tests, which pin the exact behaviors the allowlist gate relies
-on.
+regression tests, which continue to pin them even while the gate is
+dormant.
 """
 
 from __future__ import annotations

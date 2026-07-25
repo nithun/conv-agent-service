@@ -22,17 +22,12 @@ import time
 
 import pytest
 
-import app.delivery.glific_client as glific_client_module
 import app.ingress.glific_webhook as glific_webhook_module
-import app.llm.router as llm_router_module
 from app.ingress.contact_allowlist import ContactAllowlist
 from app.queue.escalation_queue import ESCALATION_STREAM_KEY
 from app.queue.settings import stream_key
 from tests.ingress._webhook_signing import sign_webhook_body
-from tests.ingress.conftest import (
-    FIXTURE_ALLOWLISTED_PHONE,
-    TEST_WEBHOOK_SECRET,
-)
+from tests.ingress.conftest import TEST_WEBHOOK_SECRET
 
 
 @pytest.mark.asyncio
@@ -433,14 +428,17 @@ async def test_rejected_distress_text_never_reaches_the_distress_gate(
     assert escalation_entries == []
 
 
-# ---- CR-010: contact allowlist ---------------------------------------------
+# ---- CR-010 (historical, allowlist ACTIVE): allowlisted contact_id/phone --
+# still succeed under the old, now-superseded gate shape. Kept as regression
+# coverage that adding CR-011's open-population removal never narrows who
+# may reach the route.
 
 
 @pytest.mark.asyncio
-async def test_allowlisted_contact_id_acks_200_and_proceeds_exactly_as_before(raw_client) -> None:
-    """AC-4 (contact_id variant): a correctly-signed request from an
-    allowlisted contact_id returns 200 and proceeds unchanged
-    (dedupe/distress-gate/enqueue all still run).
+async def test_allowlist_fixture_contact_id_still_acks_200_and_proceeds(raw_client) -> None:
+    """A contact_id that WOULD have been allowlisted under CR-010 still
+    reaches 200 today — CR-011 only widens the population, it never
+    narrows it.
     """
     payload = {
         "contact_id": "7",  # in conftest's FIXTURE_ALLOWLISTED_CONTACT_IDS
@@ -462,68 +460,25 @@ async def test_allowlisted_contact_id_acks_200_and_proceeds_exactly_as_before(ra
     assert len(entries) == 1
 
 
-@pytest.mark.asyncio
-async def test_allowlisted_phone_acks_200_and_proceeds_exactly_as_before(raw_client) -> None:
-    """AC-4 (phone variant): the contact_id itself is NOT on the
-    allowlist, only the phone is — `ContactAllowlist.is_allowed` matches
-    EITHER field.
-    """
-    payload = {
-        "contact_id": "not-on-any-allowlist-fixture",
-        "phone": FIXTURE_ALLOWLISTED_PHONE,
-        "message_id": "ac4-phone-1",
-        "text": "hello there",
-    }
-    body = json.dumps(payload).encode()
-    header = sign_webhook_body(TEST_WEBHOOK_SECRET, body)
-
-    response = await raw_client.post(
-        "/webhook/glific",
-        content=body,
-        headers={"content-type": "application/json", "X-Glific-Signature": header},
-    )
-
-    assert response.status_code == 200
-    entries = await raw_client._transport.app.state.redis.xrange(
-        stream_key("not-on-any-allowlist-fixture")
-    )
-    assert len(entries) == 1
+# ---- CR-011 (2026-07-25, ADR-013): allowlist Depends() removed -------------
 
 
 @pytest.mark.asyncio
-async def test_non_allowlisted_contact_rejected_403_with_zero_side_effects(
-    raw_client, monkeypatch
+async def test_signature_valid_never_before_seen_contact_is_not_rejected_403(
+    raw_client,
 ) -> None:
-    """AC-5: adversarial fixture (L-017) — a fully valid, correctly SIGNED
-    payload from a realistic non-allowlisted contact (neither contact_id
-    nor phone on the allowlist, not a malformed body). Checklists AC-5a
-    through AC-5f separately per L-021 (an enumerated 5-item "no side
-    effect" deliverable does not get one blanket assertion).
+    """CR-011's own Acceptance criterion, verbatim: "a signature-valid
+    request from a contact_id NOT in any configured allowlist value still
+    succeeds (200/enqueued) once signature-valid." Adversarial fixture
+    (L-017): a realistic, well-formed, never-before-seen contact_id/phone
+    pair — neither is in `FIXTURE_ALLOWLISTED_CONTACT_IDS`/
+    `FIXTURE_ALLOWLISTED_PHONE`, and this is exactly the payload shape
+    CR-010's own now-removed rejection test used to 403 on.
     """
-    send_text_calls = {"count": 0}
-    create_ticket_calls = {"count": 0}
-    generate_calls = {"count": 0}
-
-    async def _spy_send_text(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        send_text_calls["count"] += 1
-        return {"id": "should-never-be-called"}
-
-    async def _spy_create_ticket(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        create_ticket_calls["count"] += 1
-        return {"id": "should-never-be-called"}
-
-    async def _spy_generate(self, *args, **kwargs):  # type: ignore[no-untyped-def]
-        generate_calls["count"] += 1
-        raise AssertionError("model_router.generate must never be called for a rejected contact")
-
-    monkeypatch.setattr(glific_client_module.GlificClient, "send_text", _spy_send_text)
-    monkeypatch.setattr(glific_client_module.GlificClient, "create_ticket", _spy_create_ticket)
-    monkeypatch.setattr(llm_router_module.ModelRouter, "generate", _spy_generate)
-
     payload = {
         "contact_id": "999999",
         "phone": "9199999999",
-        "message_id": "adversarial-1",
+        "message_id": "cr011-open-population-1",
         "text": "hello there, this is a completely normal message",
     }
     body = json.dumps(payload).encode()
@@ -535,45 +490,27 @@ async def test_non_allowlisted_contact_rejected_403_with_zero_side_effects(
         headers={"content-type": "application/json", "X-Glific-Signature": header},
     )
 
-    # AC-5a
-    assert response.status_code == 403
-    assert response.json() == {"detail": "forbidden"}
-
-    # AC-5b: zero writes to the turn stream.
-    turn_entries = await raw_client._transport.app.state.redis.xrange(stream_key("999999"))
-    assert turn_entries == []
-
-    # AC-5c: zero writes to the escalation stream (this payload's text is
-    # not distress-triggering, confirming the "normal" rejection path is
-    # also side-effect-free — the distress-specific N2 variant is the next
-    # test).
-    escalation_entries = await raw_client._transport.app.state.redis.xrange(
-        ESCALATION_STREAM_KEY
-    )
-    assert escalation_entries == []
-
-    # AC-5d/5e/5f: none of the real side-effecting calls ever ran.
-    assert send_text_calls["count"] == 0
-    assert create_ticket_calls["count"] == 0
-    assert generate_calls["count"] == 0
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    entries = await raw_client._transport.app.state.redis.xrange(stream_key("999999"))
+    assert len(entries) == 1
 
 
 @pytest.mark.asyncio
-async def test_non_allowlisted_contact_with_distress_text_still_zero_escalation_entries(
+async def test_signature_valid_never_before_seen_contact_with_distress_text_still_escalates(
     raw_client,
 ) -> None:
-    """AC-5c's N2 variant — the highest-consequence edge case CR-010's own
-    Edge cases section names: a non-allowlisted contact's message
-    containing a live distress keyword must STILL be rejected before the
-    top-level distress gate ever runs (Depends() dependencies run before
-    the entire handler body, including detect_distress). Zero escalation
-    entries proves rejection happens before the distress gate, not merely
-    before the normal turn enqueue.
+    """The distress-gate consequence ADR-013 records explicitly (not a
+    regression, but a documented behavior change from CR-010's own
+    boundary): because population is no longer allowlist-bounded, a
+    never-before-seen contact whose message trips the distress gate now
+    DOES reach it and gets escalated — the opposite of what CR-010's own
+    N2 rejection test proved.
     """
     payload = {
         "contact_id": "999999",
         "phone": "9199999999",
-        "message_id": "adversarial-distress-1",
+        "message_id": "cr011-open-population-distress-1",
         "text": "I want to kill myself",
     }
     body = json.dumps(payload).encode()
@@ -585,31 +522,28 @@ async def test_non_allowlisted_contact_with_distress_text_still_zero_escalation_
         headers={"content-type": "application/json", "X-Glific-Signature": header},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 200
+    assert response.json().get("escalated") is True
     escalation_entries = await raw_client._transport.app.state.redis.xrange(
         ESCALATION_STREAM_KEY
     )
-    assert escalation_entries == []
-    turn_entries = await raw_client._transport.app.state.redis.xrange(stream_key("999999"))
-    assert turn_entries == []
+    assert len(escalation_entries) == 1
+    assert escalation_entries[0][1]["contact_id"] == "999999"
 
 
 @pytest.mark.asyncio
-async def test_invalid_signature_and_non_allowlisted_contact_returns_401_never_403(
+async def test_invalid_signature_from_never_before_seen_contact_still_returns_401(
     raw_client,
 ) -> None:
-    """AC-9: dependency ORDER is enforced — an INVALID signature combined
-    with a non-allowlisted contact_id must return 401 (the signature
-    failure), never 403, proving `verify_glific_webhook_signature` runs
-    strictly before `verify_contact_allowlisted`. An unsigned request from
-    a non-allowlisted contact is the adversarial case: if the allowlist
-    ever ran first, this would leak allowlist-membership information to an
-    unauthenticated caller.
+    """The signature-verification dependency (CR-009) is UNCHANGED and
+    still runs — removing the allowlist gate does not also remove
+    authenticity verification. An unsigned request is still rejected 401,
+    regardless of population.
     """
     payload = {
         "contact_id": "999999",
         "phone": "9199999999",
-        "message_id": "order-check-1",
+        "message_id": "cr011-no-sig-1",
         "text": "hello",
     }
     body = json.dumps(payload).encode()
@@ -625,38 +559,12 @@ async def test_invalid_signature_and_non_allowlisted_contact_returns_401_never_4
     assert turn_entries == []
 
 
-@pytest.mark.asyncio
-async def test_wrong_signature_and_non_allowlisted_contact_still_returns_401(raw_client) -> None:
-    """AC-9's second flavor: a well-formed but WRONG signature (not merely
-    missing) combined with a non-allowlisted contact still returns 401,
-    not 403.
+def test_route_dependency_order_is_signature_verification_only() -> None:
+    """Static structural guard, CR-011's own Acceptance criterion: the
+    route's `dependencies=` list no longer includes
+    `verify_contact_allowlisted` — `verify_glific_webhook_signature`
+    (CR-009) remains and is the ONLY entry.
     """
-    payload = {
-        "contact_id": "999999",
-        "phone": "9199999999",
-        "message_id": "order-check-2",
-        "text": "hello",
-    }
-    body = json.dumps(payload).encode()
-    header = sign_webhook_body("definitely-not-the-configured-secret", body)
-
-    response = await raw_client.post(
-        "/webhook/glific",
-        content=body,
-        headers={"content-type": "application/json", "X-Glific-Signature": header},
-    )
-
-    assert response.status_code == 401
-    assert response.json() == {"detail": "unauthorized"}
-
-
-def test_route_dependency_order_is_signature_then_allowlist() -> None:
-    """Static structural guard: the route's `dependencies=` list must carry
-    `verify_glific_webhook_signature` BEFORE `verify_contact_allowlisted` —
-    architecture-reviewer's endorsed order must never be silently
-    reshuffled by a future ingress change.
-    """
-    from app.ingress.contact_allowlist import verify_contact_allowlisted
     from app.ingress.webhook_auth import verify_glific_webhook_signature
 
     route = next(
@@ -666,25 +574,26 @@ def test_route_dependency_order_is_signature_then_allowlist() -> None:
     )
     dependency_callables = [dep.call for dep in route.dependant.dependencies]  # type: ignore[attr-defined]
 
-    assert dependency_callables == [verify_glific_webhook_signature, verify_contact_allowlisted]
+    assert dependency_callables == [verify_glific_webhook_signature]
 
 
 @pytest.mark.asyncio
-async def test_contact_allowlist_override_after_client_construction_is_respected(
+async def test_contact_allowlist_state_override_no_longer_affects_the_route(
     raw_client,
 ) -> None:
-    """Sanity check that a test may narrow/replace the fixture's default
-    allowlist directly on `app.state` (used by CR-010's own rejection
-    tests implicitly via ids absent from the fixture default, exercised
-    here explicitly for a contact that WOULD otherwise be allowlisted by
-    the fixture default).
+    """Proves `app.ingress.contact_allowlist` is genuinely DORMANT on this
+    route, not merely un-imported: setting `app.state.contact_allowlist` to
+    an EMPTY set — which under CR-010 would have 403'd every request,
+    including this one's normally-allowlisted contact_id — now has zero
+    effect, because the dependency reading that state is no longer wired
+    onto `/webhook/glific` at all.
     """
     raw_client._transport.app.state.contact_allowlist = ContactAllowlist(tokens=frozenset())
 
     payload = {
         "contact_id": "7",  # normally in FIXTURE_ALLOWLISTED_CONTACT_IDS
         "phone": "919999999999",
-        "message_id": "override-check-1",
+        "message_id": "cr011-dormant-override-check-1",
         "text": "hello",
     }
     body = json.dumps(payload).encode()
@@ -696,4 +605,4 @@ async def test_contact_allowlist_override_after_client_construction_is_respected
         headers={"content-type": "application/json", "X-Glific-Signature": header},
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 200

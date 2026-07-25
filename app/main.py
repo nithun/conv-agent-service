@@ -17,6 +17,7 @@ import redis.asyncio as redis_asyncio
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
+from app.config.deploy_gates import resolve_langfuse_host_gate, resolve_lms_write_target_gate
 from app.config.settings import Settings, get_settings
 from app.delivery.glific_client import GlificClient
 from app.ingress.contact_allowlist import resolve_contact_allowlist
@@ -86,6 +87,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # local-dev fallback rule.
     app.state.contact_allowlist = resolve_contact_allowlist(settings)
     app.state.contact_allowlist_rejection_count = 0
+
+    # CR-011 / ADR-013 GL-005-a + GL-005-b (2026-07-25): two more boot-time
+    # fail-closed gates, immediately after the contact allowlist and BEFORE
+    # any client is constructed. Both are production-only preconditions
+    # ADR-013 elevated from checklist items to structural code (F-070's
+    # Langfuse egress gate; the LMS-write-target gate) — see
+    # app/config/deploy_gates.py's module docstring for why these are
+    # gated on `environment == "production"` specifically, not CR-009/
+    # CR-010's `!= "local"` shape.
+    resolve_langfuse_host_gate(settings)
+    resolve_lms_write_target_gate(settings)
 
     app.state.redis = _build_redis_client(settings)
     app.state.lms_client = _build_lms_client(settings)

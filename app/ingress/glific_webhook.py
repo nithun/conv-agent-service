@@ -32,11 +32,20 @@ this handler body changed for CR-009.
 CR-010 (2026-07-25, F-042/F-043): the route gained a second dependency,
 `app/ingress/contact_allowlist.py::verify_contact_allowlisted`, wired as
 the SECOND entry in `dependencies=`, after signature verification —
-rejects (403) any request whose `contact_id`/`phone` is not on the
-resolved allowlist, before dedupe/distress-gate/enqueue. Ordering is
-load-bearing: signature verification must run first, since an
-unauthenticated claim about `contact_id` is worthless to check against
-anything. No line in this handler body changed for CR-010 either.
+rejected (403) any request whose `contact_id`/`phone` was not on the
+resolved allowlist, before dedupe/distress-gate/enqueue. Ordering was
+load-bearing: signature verification ran first, since an unauthenticated
+claim about `contact_id` is worthless to check against anything.
+
+CR-011 (2026-07-25, keyword-triggered conv-AI test flow, ADR-013): that
+second dependency is REMOVED from `dependencies=` below — a closed-set
+allowlist and the open, keyword-triggered self-provisioning flow CR-011
+ships are structurally incompatible in the same request path (§Proposed
+behavior 5, "disabled, not deleted"). `app/ingress/contact_allowlist.py`
+and its own test suite are UNCHANGED and stay dormant, not deleted —
+reversibility (a future broader-population trial can re-add the single
+`Depends()` entry below without rebuilding anything). No line in this
+handler body changed for either CR-010 or CR-011.
 """
 
 from __future__ import annotations
@@ -47,7 +56,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
 from app.core.guardrails_checks import detect_distress
-from app.ingress.contact_allowlist import verify_contact_allowlisted
 from app.ingress.glific_payload import GlificWebhookPayload, parse_glific_webhook_payload
 from app.ingress.webhook_auth import verify_glific_webhook_signature
 from app.queue.enqueue import enqueue_turn, is_duplicate_message
@@ -77,7 +85,6 @@ def _flatten_payload_for_stream(payload: GlificWebhookPayload) -> dict[str, str]
     "/webhook/glific",
     dependencies=[
         Depends(verify_glific_webhook_signature),
-        Depends(verify_contact_allowlisted),
     ],
 )
 async def glific_webhook(request: Request) -> dict[str, object]:
