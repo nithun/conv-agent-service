@@ -69,6 +69,17 @@ async def test_missing_required_fields_returns_4xx_not_5xx(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_dict_json_body_returns_4xx_not_5xx(client) -> None:
+    """F-067: well-formed JSON whose top level is not an object (a list,
+    string, or number) used to AttributeError inside the parser and 500.
+    It is malformed the same way a missing field is — 4xx, never 5xx.
+    """
+    for body in ([1, 2, 3], "hi", 3):
+        response = await client.post("/webhook/glific", json=body)
+        assert 400 <= response.status_code < 500, f"body {body!r} -> {response.status_code}"
+
+
+@pytest.mark.asyncio
 async def test_empty_body_returns_4xx_not_5xx(client) -> None:
     response = await client.post(
         "/webhook/glific", content=b"", headers={"content-type": "application/json"}

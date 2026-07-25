@@ -59,6 +59,13 @@ def parse_glific_webhook_payload(raw: dict[str, Any]) -> GlificWebhookPayload:
     route) maps that to a 4xx, never a 5xx (CR-004 Task 3 acceptance
     criteria).
     """
+    # F-067: a well-formed-JSON but non-dict top level (e.g. `[1,2,3]`,
+    # `"hi"`, `3`) is malformed the same way a missing field is — raise the
+    # contract's ValueError rather than letting `.get` AttributeError into
+    # a 500. (Type hint says dict, but the route hands us whatever
+    # request.json() decoded.)
+    if not isinstance(raw, dict):
+        raise ValueError("webhook body must be a JSON object")
     contact_raw = raw.get("contact")
     contact: dict[str, Any] = contact_raw if isinstance(contact_raw, dict) else {}
     message_raw = raw.get("message")
