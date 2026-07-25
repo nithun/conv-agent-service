@@ -16,12 +16,27 @@ payload: `"<timestamp>.<raw_body>"`. Secret: the Glific organization's
 unconfigured Glific deployment, hence the fail-closed discipline below.
 
 Non-blocking finding carried forward (architecture-reviewer, CR-009 Status
-log 2026-07-17): the timestamp is stamped at Oban ENQUEUE time inside
-`do_oban/3` (baked into the job args), and job retries (`max_attempts: 2`,
-`queue: :webhook`) reuse those SAME cached headers/timestamp — so
-`WEBHOOK_SIGNATURE_TOLERANCE_SECONDS` budgets Glific's queue latency +
-retry backoff, not network flight time. Do not re-justify this value with a
-"in-flight request" mental model in future edits.
+log 2026-07-17), CORRECTED by CR-010's architecture-reviewer review
+(C-1/C-1(d), 2026-07-25, source-verified against `lib/glific/flows/webhook.ex`,
+sibling `Glific - clone` workspace): a rejection (401/403/413/5xx from this
+route) is NOT retried at all — `perform/1`'s dispatch `case` handles any
+non-`200..299` status via a `{:ok, %Tesla.Env{}}` clause that only calls
+`update_log(webhook_log_id, "Did not return a 200..299 status code" <>
+message.body)` and returns `:ok`; `max_attempts: 2` (`queue: :webhook`) is
+spent only on a crash/raise or a `{:snooze, _}` (the Kaapi rate-limit
+path), never on a rejection. A rejected request costs exactly ONE
+round-trip, reusing nothing, because there is no second attempt. Separately
+— and also newly on record, per CR-010's Edge cases — a non-2xx response
+DOES wake the calling Glific flow's own FAILURE branch
+(`Messages.create_temp_message(org_id, "Failure")` →
+`FlowContext.wakeup_one/2` for a sync webhook, ours), so a rejected
+contact may still receive whatever that branch's node sends, from Glific's
+flow itself, never from this service. `WEBHOOK_SIGNATURE_TOLERANCE_SECONDS`
+still budgets Glific's queue latency (the timestamp is stamped at Oban
+ENQUEUE time inside `do_oban/3`, baked into the job args) — that part of
+the original finding stands; only the "retried, reusing the same cached
+headers" claim was wrong. See AD-002's External-contracts table (the
+CR-010 Oban non-2xx row) for the full source citation.
 
 No code-level bypass: verification always runs, unconditionally, on every
 environment, every request (CR-009's central design decision — there is no
