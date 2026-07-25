@@ -34,6 +34,18 @@ to exercise a rejection path. `raw_client` (auth-focused negative-path
 tests, `tests/ingress/test_glific_webhook.py`) skips the auto-sign hook
 entirely so a test can send NO header at all, a malformed one, or a
 deliberately wrong one.
+
+CR-010 (2026-07-25): `/webhook/glific` also requires the request's parsed
+`contact_id`/`phone` to be on `app.state.contact_allowlist` (see
+`app/ingress/contact_allowlist.py`). `client`, `raw_client`, and
+`client_with_escalation_worker` all wire a default
+`app.state.contact_allowlist` covering the exact `contact_id` literals
+every PRE-EXISTING test in this package already posts (mirroring how
+CR-009 wired `app.state.glific_webhook_secret` into the same fixtures) —
+so every test written before this CR keeps exercising post-allowlist
+behavior unchanged. CR-010's OWN adversarial/rejection tests use fresh
+contact ids deliberately absent from this set (e.g. `"999999"`), or
+override `app.state.contact_allowlist` directly after obtaining a client.
 """
 
 from __future__ import annotations
@@ -47,6 +59,7 @@ import httpx
 import pytest
 
 from app.config.settings import Settings
+from app.ingress.contact_allowlist import ContactAllowlist
 from app.main import app
 from app.worker.escalation_consumer import drain_escalation_stream_once
 from app.worker.session_store import RedisSessionStore
@@ -58,6 +71,26 @@ from tests.ingress._webhook_signing import sign_webhook_body
 # distinct, so a test never accidentally "passes" against the wrong
 # fallback constant).
 TEST_WEBHOOK_SECRET = "cr-009-test-secret-do-not-use-in-any-real-env"
+
+# CR-010: the exact set of `contact_id` literals every PRE-EXISTING test in
+# `tests/ingress/` posts through `client`/`raw_client`/
+# `client_with_escalation_worker` (grepped this session) — a closed,
+# test-only set, mirroring TEST_WEBHOOK_SECRET's own "fixed constant, never
+# a real value" discipline. CR-010's own new tests use fresh contact ids
+# deliberately absent from this set (e.g. `"999999"`) to exercise
+# rejection, or override `app.state.contact_allowlist` after obtaining a
+# client.
+FIXTURE_ALLOWLISTED_CONTACT_IDS = frozenset(
+    {"1", "2", "3", "4", "5", "6", "7", "8", "10", "11", "12", "13", "14", "30", "40", "41"}
+    | {str(n) for n in range(60, 68)}
+    | {f"load-{i}" for i in range(50)}
+)
+
+# CR-010 AC-4's phone-variant fixture: a phone token distinct from any
+# contact_id above, allowlisted via the `phone` field of
+# `ContactAllowlist.is_allowed` rather than `contact_id`.
+FIXTURE_ALLOWLISTED_PHONE = "919876500011"
+FIXTURE_ALLOWLISTED_CONTACT_IDS = FIXTURE_ALLOWLISTED_CONTACT_IDS | {FIXTURE_ALLOWLISTED_PHONE}
 
 
 async def _auto_sign_glific_webhook_requests(request: httpx.Request) -> None:
@@ -78,6 +111,8 @@ def _install_webhook_auth_state(settings: Settings | None = None) -> None:
         environment="local", glific_webhook_secret=TEST_WEBHOOK_SECRET, _env_file=None
     )
     app.state.glific_webhook_secret = TEST_WEBHOOK_SECRET
+    app.state.contact_allowlist = ContactAllowlist(tokens=FIXTURE_ALLOWLISTED_CONTACT_IDS)
+    app.state.contact_allowlist_rejection_count = 0
 
 
 class _GlificSenderLike(Protocol):

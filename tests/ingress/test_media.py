@@ -19,6 +19,7 @@ from fastapi import FastAPI
 
 from app.config.settings import Settings
 from app.core.state_machine import StudentIdentity, new_session
+from app.ingress.contact_allowlist import verify_contact_allowlisted
 from app.ingress.media import (
     cleanup_expired_media,
     download_media,
@@ -40,6 +41,17 @@ def test_media_route_has_no_webhook_signature_dependency() -> None:
     dependency_callables = [dep.call for dep in route.dependant.dependencies]  # type: ignore[attr-defined]
 
     assert verify_glific_webhook_signature not in dependency_callables
+
+
+def test_media_route_has_no_contact_allowlist_dependency() -> None:
+    """AC-8 (CR-010): /media/{token} stays public/BSP-fetchable, explicitly
+    untouched by this CR (Scope of change — the BSP fetching audio is not a
+    Glific-authenticated party and carries no contact identity to check).
+    """
+    route = next(r for r in media_router.routes if r.path == "/media/{token}")  # type: ignore[attr-defined]
+    dependency_callables = [dep.call for dep in route.dependant.dependencies]  # type: ignore[attr-defined]
+
+    assert verify_contact_allowlisted not in dependency_callables
 
 
 @pytest.mark.asyncio
