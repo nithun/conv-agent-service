@@ -74,6 +74,14 @@ def test_unset_environment_env_var_resolves_to_empty_string_not_local(monkeypatc
     `RuntimeError` branch, never the dummy-secret fallback.
     """
     monkeypatch.delenv("ENVIRONMENT", raising=False)
+    # Isolate the secret too: this test builds Settings from the AMBIENT env
+    # (no kwargs), and since the F-047 fix .env pre-fills
+    # GLIFIC_WEBHOOK_SECRET — which compose forwards into the container's
+    # environment — a leaked secret makes resolve_glific_webhook_secret
+    # legitimately not raise (a secret IS set), failing this test only
+    # inside Docker. The scenario under test is "nothing configured at
+    # all", so both vars must be absent.
+    monkeypatch.delenv("GLIFIC_WEBHOOK_SECRET", raising=False)
 
     settings = Settings(_env_file=None)
 
