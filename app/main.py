@@ -19,6 +19,7 @@ from redis.asyncio import Redis
 
 from app.config.settings import Settings, get_settings
 from app.delivery.glific_client import GlificClient
+from app.ingress.contact_allowlist import resolve_contact_allowlist
 from app.ingress.glific_webhook import router as webhook_router
 from app.ingress.health import router as health_router
 from app.ingress.media import router as media_router
@@ -73,6 +74,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # resolve_glific_webhook_secret docstring for the fail-closed-by-
     # environment rule.
     app.state.glific_webhook_secret = resolve_glific_webhook_secret(settings)
+
+    # CR-010 (contact allowlist, 2026-07-25, F-042/F-043): resolve — or
+    # fail-closed reject — the population bound BEFORE constructing any
+    # client, immediately after the webhook signature secret. Same
+    # ordering discipline: an unkeyable auth secret and an unbounded
+    # contact allowlist are both boot-blocking conditions, checked before
+    # Redis/LMS/Glific/ModelRouter are ever touched. See
+    # app/ingress/contact_allowlist.py's resolve_contact_allowlist
+    # docstring for the fail-closed-by-environment + C-2 double-gated
+    # local-dev fallback rule.
+    app.state.contact_allowlist = resolve_contact_allowlist(settings)
+    app.state.contact_allowlist_rejection_count = 0
 
     app.state.redis = _build_redis_client(settings)
     app.state.lms_client = _build_lms_client(settings)

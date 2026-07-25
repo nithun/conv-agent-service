@@ -158,6 +158,23 @@ class Settings(BaseSettings):
     # "attacker sends a gigantic body to burn CPU/memory" gap.
     max_webhook_body_bytes: int = 65_536
 
+    # --- Contact allowlist (CR-010, F-042/F-043) ---
+    # Comma-separated Glific contact ids and/or phone numbers permitted to
+    # reach POST /webhook/glific — matched by
+    # `app.ingress.contact_allowlist.ContactAllowlist.is_allowed` against
+    # the SAME parsed contact_id/phone `parse_glific_webhook_payload`
+    # already produces for every other caller (no second parser, L-014).
+    # No baked default (same no-baked-secret discipline as
+    # glific_webhook_secret) — a static read of `Settings()` must never
+    # look bounded on its own. The actual fail-closed-by-environment
+    # resolution (including the local-dev simulator-pool fallback, gated on
+    # BOTH environment == "local" AND a local-looking glific_api_url per
+    # architecture-reviewer C-2) lives in
+    # `app.ingress.contact_allowlist.resolve_contact_allowlist`, called
+    # once at startup — never here, so this field's own default can never
+    # silently widen who may reach the webhook.
+    glific_contact_allowlist: str = ""
+
 
 def get_settings() -> Settings:
     """Return a fresh Settings instance (env re-read each call).
