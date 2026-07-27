@@ -102,6 +102,9 @@ class Settings(BaseSettings):
     tap_lms_api_key: str = ""
     # Required for get_next_content (allow_guest=False on the live server,
     # ported fact from tap-buddy/CLAUDE.md, live-verified 2026-07-03).
+    # Also sent (same value, no new credential) on start_quiz (F-028) and,
+    # since CR-011/ADR-013 (2026-07-27, F-071 reply), register_test_student/
+    # reset_test_student.
     tap_lms_token: str = ""
 
     # --- Redis session store (R-2) ---
