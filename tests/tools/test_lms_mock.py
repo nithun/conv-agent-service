@@ -67,6 +67,38 @@ async def test_mock_save_submission_records_call():
     assert client.submissions[0]["student_id"] == "STU-001"
 
 
+@pytest.mark.asyncio
+async def test_mock_save_submission_rejects_unknown_content_id():
+    """F-030: the live CR-005 contract validates `content_id` against the
+    Assignment doctype — unknown ids get
+    `{"success": false, "status": "invalid_assignment", ...}` with no
+    Submission created. Previously this fixture accepted ANY content_id and
+    always returned success=True, so mocked tests could not exercise the
+    rejection path the real client already maps (`app/tools/lms_client.py`
+    `save_submission`).
+    """
+    client = MockTapLmsClient()
+    result = await client.save_submission("STU-001", "NOT-A-REAL-CONTENT-ID", "done")
+    assert result.success is False
+    assert result.status == "invalid_assignment"
+    assert result.message is not None
+    # No Submission recorded for a rejected content id.
+    assert client.submissions == []
+
+
+@pytest.mark.asyncio
+async def test_mock_save_submission_accepts_any_content_id_the_mock_has_vended():
+    """Every content_id the fixture's own get_next_content data can hand
+    out must still be accepted — the validation is against "vended"
+    Assignment ids, not a hardcoded single value.
+    """
+    client = MockTapLmsClient()
+    for content_id in ("CONTENT-101", "CONTENT-102", "CONTENT-103"):
+        result = await client.save_submission("STU-001", content_id, "done")
+        assert result.success is True
+        assert result.status == "submitted"
+
+
 # ---- register_test_student / reset_test_student (CR-011/ADR-013 6/7) ------
 
 

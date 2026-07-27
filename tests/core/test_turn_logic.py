@@ -741,8 +741,12 @@ async def test_get_next_content_returning_none_does_not_advance():
 @pytest.mark.asyncio
 async def test_save_submission_uses_session_ids_not_model_supplied_ones():
     session = _session_at(SessionState.ACTIVITY_IN_PROGRESS)
+    # F-030: MockTapLmsClient.save_submission now validates content_id
+    # against ids it has actually vended (mirrors the live CR-005 contract)
+    # — use one of those (CONTENT-101, from DEFAULT_FIXTURE_CONTENT) so this
+    # test keeps exercising identifier AUTHORITY, not content-id validity.
     session.content_reference = {
-        "content_id": "REAL-CONTENT-42",
+        "content_id": "CONTENT-101",
         "title": "Real lesson",
         "content_type": "VideoClass",
     }
@@ -771,7 +775,7 @@ async def test_save_submission_uses_session_ids_not_model_supplied_ones():
     assert lms.submissions == [
         {
             "student_id": "STU-001",  # from session.identity, not the model
-            "content_id": "REAL-CONTENT-42",  # from session.content_reference
+            "content_id": "CONTENT-101",  # from session.content_reference
             "submission": "my real answer",  # the model's to provide
         }
     ]
@@ -829,7 +833,14 @@ async def test_save_submission_fallback_to_model_ids_is_loud_not_silent(caplog):
                     name="save_submission",
                     arguments={
                         "student_id": "MODEL-GUESS",
-                        "content_id": "MODEL-GUESS-CONTENT",
+                        # F-030: MockTapLmsClient now validates content_id
+                        # against vended ids (live CR-005 contract) — use a
+                        # real one (CONTENT-101) so this test keeps
+                        # exercising the FALLBACK-IS-LOUD behavior, not
+                        # content-id validity (covered separately by
+                        # tests/tools/test_tool_binding.py's
+                        # test_save_submission_invalid_content_id_surfaces_rejection_not_success).
+                        "content_id": "CONTENT-101",
                         "submission": "answer",
                     },
                 )
@@ -847,7 +858,7 @@ async def test_save_submission_fallback_to_model_ids_is_loud_not_silent(caplog):
     assert lms.submissions == [
         {
             "student_id": "MODEL-GUESS",
-            "content_id": "MODEL-GUESS-CONTENT",
+            "content_id": "CONTENT-101",
             "submission": "answer",
         }
     ]

@@ -128,6 +128,24 @@ class MockTapLmsClient:
     async def save_submission(
         self, student_id: str, content_id: str, submission: str
     ) -> SubmissionResult:
+        """Mirrors the live CR-005 `invalid_assignment` contract
+        (`docs/change-requests/CR-005-mock-lms-feedback-pipeline-available.md`
+        "Contract change on the same branch"): `content_id` is now validated
+        against the Assignment doctype server-side — unknown ids get
+        `{"success": false, "status": "invalid_assignment", ...}` with NO
+        Submission created. This fixture validates against the content ids
+        it has actually vended via `get_next_content` (`self.content`'s
+        values) rather than accepting any string, so mocked tests can
+        exercise the rejection path the real client already maps
+        (`app/tools/lms_client.py` `save_submission`). F-030.
+        """
+        valid_assignment_ids = {c.content_id for c in self.content.values()}
+        if content_id not in valid_assignment_ids:
+            return SubmissionResult(
+                success=False,
+                status="invalid_assignment",
+                message=f"content_id {content_id!r} is not a recognized Assignment",
+            )
         self.submissions.append(
             {"student_id": student_id, "content_id": content_id, "submission": submission}
         )

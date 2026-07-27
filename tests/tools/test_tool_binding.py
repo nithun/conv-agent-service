@@ -203,6 +203,79 @@ async def test_save_submission_reply_reflects_real_tool_return_value() -> None:
     assert lms.submissions[0]["submission"] == "done"
 
 
+@dataclass
+class SequencedRouter:
+    """Two-step double for run_turn's "empty text -> follow-up round" path
+    (turn_logic.py, "The model frequently returns ONLY the function call
+    with empty text"): first call returns a tool call with no text, second
+    call receives the REAL tool result folded into its prompt. Distinct from
+    RecordingModelRouter (single-shot) — mirrors
+    tests/core/test_turn_logic.py::SequencedFakeModelRouter, kept local so
+    this module doesn't reach into another test module's internals.
+    """
+
+    scripted_results: list[ModelResponse]
+    calls: list[list[dict[str, str]]] = field(default_factory=list)
+
+    async def generate(self, route_name, messages, tools=None) -> ModelResponse:
+        self.calls.append(messages)
+        index = min(len(self.calls) - 1, len(self.scripted_results) - 1)
+        return self.scripted_results[index]
+
+
+@pytest.mark.asyncio
+async def test_save_submission_invalid_content_id_surfaces_rejection_not_success() -> None:
+    """F-030: `MockTapLmsClient.save_submission` now mirrors the live CR-005
+    contract (unknown content_id -> success=False/status=invalid_assignment,
+    no Submission recorded), matching `app/tools/lms_client.py`'s real
+    parsing of that shape. This proves the REJECTION reaches the model (the
+    follow-up round's prompt carries the real success=False/invalid_assignment
+    result, not an invented success) and the session never advances as if
+    the save succeeded — the turn-logic path surfaces the rejection to the
+    student, it does not claim success.
+    """
+    session = _session_at(SessionState.ACTIVITY_IN_PROGRESS)
+    router = SequencedRouter(
+        scripted_results=[
+            ModelResponse(
+                text="",
+                tool_calls=[
+                    ToolCall(
+                        name="save_submission",
+                        arguments={
+                            "student_id": "STU-001",
+                            "content_id": "CONTENT-999",  # never vended by the mock
+                            "submission": "done",
+                        },
+                    )
+                ],
+            ),
+            ModelResponse(
+                text="Hmm, that didn't go through — let's check with your teacher."
+            ),
+        ]
+    )
+    lms = MockTapLmsClient()
+
+    outcome = await run_turn(
+        session=session, user_input="I finished!", model_router=router, lms_client=lms
+    )
+
+    # No Submission recorded for the rejected content id (CR-005's "no
+    # Submission created" behavior for an invalid_assignment).
+    assert lms.submissions == []
+    # The follow-up round's prompt (what the model actually saw) carries the
+    # REAL rejection, not a fabricated success.
+    assert len(router.calls) == 2
+    followup_prompt = router.calls[1][-1]["content"]
+    assert "invalid_assignment" in followup_prompt
+    assert "'success': False" in followup_prompt
+    # The session must not advance as though the save succeeded.
+    assert outcome.advanced_to is None
+    assert outcome.session.state == SessionState.ACTIVITY_IN_PROGRESS
+    assert outcome.reply_text == "Hmm, that didn't go through — let's check with your teacher."
+
+
 # ---- TAP_LMS_TOKEN auth requirement for get_next_content, carried forward ---
 
 
