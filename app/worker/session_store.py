@@ -8,8 +8,11 @@ for contact/conversation identity, R-7). Fields: `state`, `identity`
 `content_reference` (JSON), `mode`, `turn_count`, `reexplanation_count`,
 `asr_failure_count`, `language_choice_attempts` (CR-007),
 `language_choice_last_message_id` (code review fix, 2026-07-17 — makes the
-attempts counter idempotent per inbound message), `readiness_response`,
-`escalation_reason`, `created_at`, `updated_at`.
+attempts counter idempotent per inbound message),
+`asr_escalation_ticket_message_id` (F-039, 2026-07-27 — makes the
+ASR-failure escalation's Glific Ticket open idempotent per inbound
+message), `readiness_response`, `escalation_reason`, `created_at`,
+`updated_at`.
 
 TTL policy (AD-002 Interfaces & schemas / CR-004 Open Question 2's
 settled answer): `SESSION_TTL_SECONDS` (30 min inactivity, matching
@@ -64,6 +67,7 @@ def _serialize_session(session: SessionData) -> dict[str, str]:
         "asr_failure_count": str(session.asr_failure_count),
         "language_choice_attempts": str(session.language_choice_attempts),
         "language_choice_last_message_id": session.language_choice_last_message_id or "",
+        "asr_escalation_ticket_message_id": session.asr_escalation_ticket_message_id or "",
         "readiness_response": session.readiness_response or "",
         "resolved_locale": json.dumps(session.resolved_locale)
         if session.resolved_locale is not None
@@ -105,6 +109,11 @@ def _deserialize_session(fields: dict[str, str]) -> SessionData:
         # deserializes it as None (equivalent to "no message consumed an
         # attempt yet"), no migration needed.
         language_choice_last_message_id=fields.get("language_choice_last_message_id") or None,
+        # F-039: same missing-hash-field tolerance — a pre-existing session
+        # hash serialized before this field existed deserializes it as None
+        # (equivalent to "no Ticket opened for this escalation yet"), no
+        # migration needed.
+        asr_escalation_ticket_message_id=fields.get("asr_escalation_ticket_message_id") or None,
         readiness_response=fields.get("readiness_response") or None,
         resolved_locale=resolved_locale,
         escalation_reason=escalation_reason,

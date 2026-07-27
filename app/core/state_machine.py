@@ -141,6 +141,19 @@ class SessionData:
     # own missing-hash-field tolerance for a pre-existing serialized
     # session hash.
     language_choice_last_message_id: str | None = None
+    # F-039 (retry-safety, 2026-07-27): the `message_id` for which this
+    # session already opened a Glific Ticket for an ASR-failure escalation
+    # — makes `open_ticket_for_escalation`'s call on the CAP-REACHED audio
+    # path idempotent per inbound message, the same
+    # `payload.message_id`-tracking shape `language_choice_last_message_id`
+    # already established for the LANGUAGE_CHOICE counter (2026-07-17). A
+    # job redelivery for the SAME message_id (e.g. a transient `send_text`
+    # failure before the ticket-open line, or a crash between a successful
+    # ticket-open and the queue's ack) must not open a SECOND Ticket for the
+    # same escalation. Dataclass default None — mirrors
+    # `language_choice_last_message_id`'s own missing-hash-field tolerance
+    # for a pre-existing serialized session hash.
+    asr_escalation_ticket_message_id: str | None = None
     readiness_response: str | None = None
     resolved_locale: dict[str, Any] | None = None  # {"stt_locale":..., "tts_voice":...}
     escalation_reason: EscalationReason | None = None

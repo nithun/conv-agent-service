@@ -208,3 +208,39 @@ async def test_missing_language_choice_attempts_hash_field_deserializes_as_zero(
     loaded = await store.load_session("contact-9")
     assert loaded is not None
     assert loaded.language_choice_attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_asr_escalation_ticket_message_id_round_trips(redis, settings) -> None:
+    """F-039: the ASR-escalation ticket idempotency marker persists across
+    a save/load cycle, the same shape as `language_choice_last_message_id`.
+    """
+    store = RedisSessionStore(redis, settings)
+    session = new_session("contact-10", "917834811114", needs_identity_confirmation=False)
+    session.asr_escalation_ticket_message_id = "m2"
+
+    await store.save_session(session)
+    loaded = await store.load_session("contact-10")
+
+    assert loaded is not None
+    assert loaded.asr_escalation_ticket_message_id == "m2"
+
+
+@pytest.mark.asyncio
+async def test_missing_asr_escalation_ticket_message_id_hash_field_deserializes_as_none(
+    redis, settings
+) -> None:
+    """Forward-only migration: a Redis hash written before F-039 has no
+    `asr_escalation_ticket_message_id` field at all — HGETALL simply omits
+    it, and the deserializer must default-tolerate the missing key (as "no
+    Ticket opened yet for this session") rather than KeyError.
+    """
+    store = RedisSessionStore(redis, settings)
+    session = new_session("contact-11", "917834811114", needs_identity_confirmation=False)
+    await store.save_session(session)
+
+    await redis.hdel(session_key("contact-11"), "asr_escalation_ticket_message_id")
+
+    loaded = await store.load_session("contact-11")
+    assert loaded is not None
+    assert loaded.asr_escalation_ticket_message_id is None

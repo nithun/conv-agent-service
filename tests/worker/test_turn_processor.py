@@ -1349,6 +1349,84 @@ async def test_second_consecutive_low_confidence_audio_turn_escalates_asr_failur
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_asr_cap_reached_send_failure_then_redelivery_opens_exactly_one_ticket(
+    session_store,
+) -> None:
+    """F-039 regression: a transient `send_text` failure on the CAP-REACHED
+    audio path (should_fallback=True — escalate() already ran and the
+    ESCALATED session was already saved before the send raised), followed
+    by job redelivery of the SAME stream entry (identical message_id),
+    must open exactly ONE Glific Ticket for the ASR-failure escalation —
+    not a second one. Mirrors
+    `test_language_choice_reask_send_failure_then_redelivery_keeps_attempts_at_one`'s
+    fakeredis repro shape.
+    """
+    respx.get(AUDIO_MEDIA_URL).mock(return_value=Response(200, content=b"mumble-bytes"))
+    from app.core.state_machine import StudentIdentity, new_session, transition
+
+    session = new_session("a5", "917834811114", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(student_id="STU-001", child_name="Aarav")
+    transition(session, SessionState.MODE_CHOICE)
+    session.mode = "voice"
+    session.asr_failure_count = 1  # already failed once, consecutively
+    await session_store.save_session(session)
+
+    glific = FlakyGlificSender()
+    # Two low-confidence transcriptions: one for the initial (failing)
+    # attempt, one for the redelivery of the SAME stream entry.
+    speech = ScriptedSpeechClient(
+        transcribe_results=[
+            AsrResult(transcript="", confidence=0.1),
+            AsrResult(transcript="", confidence=0.1),
+        ]
+    )
+    payload = _audio_payload(contact_id="a5", message_id="m2")
+
+    # Arm the simulated transient failure for the next send_text call only
+    # (the CAP-REACHED asr_fallback reply below).
+    glific.fail_remaining = 1
+
+    with pytest.raises(RuntimeError):
+        await process_turn(
+            payload,
+            session_store=session_store,
+            lms_client=MockTapLmsClient(),
+            model_router=FakeModelRouter(),
+            glific_client=glific,
+            speech_client=speech,
+        )
+
+    session_after_failure = await session_store.load_session("a5")
+    assert session_after_failure is not None
+    assert session_after_failure.state == SessionState.ESCALATED
+    assert session_after_failure.mode == "text"
+    assert session_after_failure.asr_escalation_ticket_message_id is None
+    assert glific.created_tickets == []
+
+    # Redelivery: the consumer group re-reads the SAME still-pending stream
+    # entry (identical message_id "m2", identical audio payload).
+    result = await process_turn(
+        payload,
+        session_store=session_store,
+        lms_client=MockTapLmsClient(),
+        model_router=FakeModelRouter(),
+        glific_client=glific,
+        speech_client=speech,
+    )
+
+    assert result.escalated is True
+    assert result.escalation_reason == EscalationReason.ASR_FAILURE
+    assert result.session is not None
+    assert result.session.asr_escalation_ticket_message_id == "m2"
+    assert len(glific.sent_texts) == 1
+    assert "typing" in glific.sent_texts[0][1].lower()
+    # Exactly ONE ticket, not two — the idempotency guard held.
+    assert len(glific.created_tickets) == 1
+    assert glific.created_tickets[0][1] == "ASR failure escalation"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_high_confidence_transcription_resets_consecutive_asr_failure_count(
     session_store,
 ) -> None:

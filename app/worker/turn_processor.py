@@ -319,8 +319,21 @@ async def process_turn(
                 escalate(session, EscalationReason.ASR_FAILURE)
             await session_store.save_session(session)
             await glific_client.send_text(payload.contact_id, clarification_reply)
-            if should_fallback:
+            if should_fallback and session.asr_escalation_ticket_message_id != payload.message_id:
+                # Idempotency guard (F-039): a job redelivery for the SAME
+                # message_id — e.g. a transient send_text failure ABOVE this
+                # line on an earlier attempt, or a crash between a prior
+                # successful ticket-open and the queue's ack — must not open
+                # a SECOND Glific Ticket for the same ASR-failure escalation.
+                # Mirrors the `language_choice_last_message_id` pattern
+                # already established for the LANGUAGE_CHOICE counter
+                # (2026-07-17 code review fix). Ticket-open recorded AFTER
+                # the (never-raising, see escalation.py) attempt so a crash
+                # before this line still retries on redelivery rather than
+                # silently dropping the escalation.
                 await open_ticket_for_escalation(payload.contact_id, session, glific_client)
+                session.asr_escalation_ticket_message_id = payload.message_id
+                await session_store.save_session(session)
             return TurnProcessingResult(
                 handled=True,
                 escalated=should_fallback,
