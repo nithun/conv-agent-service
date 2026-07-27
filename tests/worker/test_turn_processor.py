@@ -625,6 +625,336 @@ async def test_multi_match_identity_asks_for_confirmation(session_store) -> None
     assert result2.session.identity.child_name == "Kavya"
 
 
+# ---- CR-011/ADR-013 Task 7: auto-provision on not-found identity ----------
+#
+# 2026-07-27 CONTRACT UPDATE (F-071 reply): `register_test_student` is a
+# SINGLE call — creates Student+ProgramEnrollment in a server-hardcoded test
+# batch and returns `student_id` directly. No two-step register-then-
+# re-resolve.
+
+
+@pytest.mark.asyncio
+async def test_not_found_identity_auto_registers_and_reaches_language_choice(
+    session_store,
+) -> None:
+    from app.config.scripted_replies import language_choice_prompt
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()  # phone below is not in DEFAULT_FIXTURE_STUDENTS
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="reg-1", phone="955555555555", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    result = await process_turn(
+        _payload(contact_id="reg-1", phone="955555555555", text="New Tester"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.session is not None
+    # Never dead-ends in IDENTITY_CONFIRMATION for a genuinely new tester —
+    # register_test_student never returns a tap_language, so the same
+    # self-retiring GAP-0 check sends this contact to LANGUAGE_CHOICE.
+    assert result.session.state == SessionState.LANGUAGE_CHOICE
+    assert result.session.identity.child_name == "New Tester"
+    assert result.session.identity.student_id  # a real id was assigned
+    assert result.session.identity.tap_language is None
+    assert glific.sent_texts[-1][1] == language_choice_prompt()
+
+    assert len(lms.register_test_student_calls) == 1
+    call = lms.register_test_student_calls[0]
+    assert call["name1"] == "New Tester"
+    assert call["phone"] == "955555555555"
+    assert call["glific_id"] == "reg-1"
+
+
+@pytest.mark.asyncio
+async def test_not_found_identity_register_test_student_repeat_call_is_idempotent(
+    session_store,
+) -> None:
+    """Same (phone, name1) resolving to the SAME student_id on a second,
+    independent contact_id session — proves the mock (and, per the F-071
+    reply, the live endpoint) genuinely treats registration as idempotent,
+    not merely "doesn't crash on a repeat."
+    """
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="reg-2a", phone="955555555556", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    first = await process_turn(
+        _payload(contact_id="reg-2a", phone="955555555556", text="Repeat Tester"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    await process_turn(
+        _payload(contact_id="reg-2b", phone="955555555556", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    second = await process_turn(
+        _payload(contact_id="reg-2b", phone="955555555556", text="Repeat Tester"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert first.session is not None and second.session is not None
+    assert first.session.identity.student_id == second.session.identity.student_id
+
+
+@pytest.mark.asyncio
+async def test_register_test_student_lms_api_error_falls_back_to_couldnt_find_reply(
+    session_store,
+) -> None:
+    from app.tools.lms_client import LmsApiError
+
+    class FailingRegisterLmsClient(MockTapLmsClient):
+        async def register_test_student(self, name1, phone, *, glific_id=None, grade=None, gender=None):  # noqa: E501
+            self.register_test_student_calls.append({"name1": name1, "phone": phone})
+            raise LmsApiError("simulated register_test_student outage")
+
+    glific = FakeGlificSender()
+    lms = FailingRegisterLmsClient()
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="reg-3", phone="955555555557", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    result = await process_turn(
+        _payload(contact_id="reg-3", phone="955555555557", text="Doomed Tester"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.session is not None
+    assert result.session.state == SessionState.IDENTITY_CONFIRMATION
+    assert result.session.identity.student_id is None
+    assert glific.sent_texts[-1][1] == (
+        "I couldn't find that name for this phone number. Can you check the spelling?"
+    )
+    # Called exactly once this turn — no automatic retry (would create
+    # ANOTHER duplicate-shaped record on the live endpoint's idempotency key).
+    assert len(lms.register_test_student_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_register_test_student_success_false_falls_back_and_not_retried(
+    session_store,
+) -> None:
+    from app.tools.lms_client import RegisterTestStudentResult
+
+    class RejectingRegisterLmsClient(MockTapLmsClient):
+        async def register_test_student(self, name1, phone, *, glific_id=None, grade=None, gender=None):  # noqa: E501
+            self.register_test_student_calls.append({"name1": name1, "phone": phone})
+            return RegisterTestStudentResult(success=False, student_id="")
+
+    glific = FakeGlificSender()
+    lms = RejectingRegisterLmsClient()
+    router = FakeModelRouter()
+
+    await process_turn(
+        _payload(contact_id="reg-4", phone="955555555558", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    result = await process_turn(
+        _payload(contact_id="reg-4", phone="955555555558", text="Rejected Tester"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.session is not None
+    assert result.session.state == SessionState.IDENTITY_CONFIRMATION
+    assert glific.sent_texts[-1][1] == (
+        "I couldn't find that name for this phone number. Can you check the spelling?"
+    )
+    assert len(lms.register_test_student_calls) == 1
+
+
+# ---- CR-011/ADR-013 Task 6: TESTAIRESET dispatch ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_testairreset_wipes_session_and_calls_reset_with_test_registered_shaped_id(
+    session_store,
+) -> None:
+    from app.config.scripted_replies import get_scripted_reply
+    from app.core.state_machine import StudentIdentity, new_session
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    session = new_session("reset-1", "9000000002", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(
+        student_id="TEST-STU-042", child_name="Tester", tap_language="English"
+    )
+    await session_store.save_session(session)
+
+    result = await process_turn(
+        _payload(contact_id="reset-1", phone="9000000002", text="  testaireset  "),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.handled is True
+    assert await session_store.load_session("reset-1") is None
+    assert lms.reset_test_student_calls == [{"student_id": "TEST-STU-042", "push_to_glific": False}]
+    assert glific.sent_texts[-1][1] == get_scripted_reply("reset_confirmation", "English")
+
+
+@pytest.mark.asyncio
+async def test_testairreset_fires_identically_for_a_real_shaped_student_id_no_guard(
+    session_store,
+) -> None:
+    """L-017/Option B: a plausible REAL id (not an obviously-fake
+    placeholder — same style as `ST00491459` used elsewhere in this repo's
+    live-verified fixtures) gets reset with NO difference in behavior from
+    the test-registered-shaped id above — proving there is no eligibility
+    guard, rather than merely assuming one doesn't exist.
+    """
+    from app.config.scripted_replies import get_scripted_reply
+    from app.core.state_machine import StudentIdentity, new_session
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    session = new_session("reset-2", "9000000003", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(
+        student_id="ST00491459", child_name="Real Kid", tap_language="Hindi"
+    )
+    await session_store.save_session(session)
+
+    result = await process_turn(
+        _payload(contact_id="reset-2", phone="9000000003", text="TestAiReset"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.handled is True
+    assert await session_store.load_session("reset-2") is None
+    assert lms.reset_test_student_calls == [{"student_id": "ST00491459", "push_to_glific": False}]
+    assert glific.sent_texts[-1][1] == get_scripted_reply("reset_confirmation", "Hindi")
+
+
+@pytest.mark.asyncio
+async def test_testairreset_fires_regardless_of_current_conversation_state(session_store) -> None:
+    from app.core.state_machine import StudentIdentity, new_session, transition
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    session = new_session("reset-3", "9000000004", needs_identity_confirmation=False)
+    session.identity = StudentIdentity(
+        student_id="ST00499999", child_name="Tester", tap_language="English"
+    )
+    session.mode = "text"
+    transition(session, SessionState.MODE_CHOICE)
+    transition(session, SessionState.CONTENT_INTRO)
+    transition(session, SessionState.ACTIVITY_IN_PROGRESS)
+    await session_store.save_session(session)
+
+    result = await process_turn(
+        _payload(contact_id="reset-3", phone="9000000004", text="TESTAIRESET"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.handled is True
+    assert lms.reset_test_student_calls == [{"student_id": "ST00499999", "push_to_glific": False}]
+    assert await session_store.load_session("reset-3") is None
+
+
+@pytest.mark.asyncio
+async def test_testairreset_with_no_session_is_a_noop(session_store) -> None:
+    from app.config.scripted_replies import get_scripted_reply
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    result = await process_turn(
+        _payload(contact_id="reset-none", phone="9000000005", text="TESTAIRESET"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.handled is True
+    assert lms.reset_test_student_calls == []
+    assert glific.sent_texts[-1][1] == get_scripted_reply("fallback", None)
+    assert await session_store.load_session("reset-none") is None
+
+
+@pytest.mark.asyncio
+async def test_testairreset_with_session_but_no_student_id_is_a_noop(session_store) -> None:
+    from app.config.scripted_replies import get_scripted_reply
+    from app.core.state_machine import new_session
+
+    glific = FakeGlificSender()
+    lms = MockTapLmsClient()
+    router = FakeModelRouter()
+
+    session = new_session("reset-4", "9000000006", needs_identity_confirmation=True)
+    await session_store.save_session(session)
+
+    result = await process_turn(
+        _payload(contact_id="reset-4", phone="9000000006", text="TESTAIRESET"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert result.handled is True
+    assert lms.reset_test_student_calls == []
+    assert glific.sent_texts[-1][1] == get_scripted_reply("fallback", None)
+    # Distinct from the "session is None" no-op: the (unresolved) session
+    # itself is untouched, not deleted, since there was nothing to reset.
+    reloaded = await session_store.load_session("reset-4")
+    assert reloaded is not None
+    assert reloaded.identity.student_id is None
+
+
 @pytest.mark.asyncio
 async def test_greeting_captures_readiness_and_advances_to_mode_choice(session_store) -> None:
     from app.core.state_machine import StudentIdentity, new_session
@@ -1531,6 +1861,21 @@ def test_process_turn_module_call_graph_reaches_every_cr_007_call_site() -> None
         "record_language_choice_attempt",
         "language_choice_prompt",
         "language_choice_reask",
+    ):
+        assert symbol in called, f"{symbol} is not called anywhere in turn_processor.py"
+
+
+def test_process_turn_module_call_graph_reaches_every_cr_011_call_site() -> None:
+    """CR-011/ADR-013 tasks 6/7: the TESTAIRESET dispatch branch and the
+    auto-provision-on-not-found branch are actually present in
+    turn_processor.py's call graph — not just unit-tested in isolation
+    (P-005/L-011).
+    """
+    called = _called_names(TURN_PROCESSOR_PATH)
+    for symbol in (
+        "get_reset_keyword",
+        "register_test_student",
+        "reset_test_student",
     ):
         assert symbol in called, f"{symbol} is not called anywhere in turn_processor.py"
 

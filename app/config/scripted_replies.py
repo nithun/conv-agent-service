@@ -32,9 +32,11 @@ logger = logging.getLogger("app.config.scripted_replies")
 _CONFIG_PATH = Path(__file__).parent / "scripted_replies.yaml"
 _FALLBACK_LANGUAGE = "English"
 _LANGUAGE_CHOICE_KEY = "_language_choice"
+_RESET_KEYWORD_KEY = "_reset_keyword"
 
-# The 10 language-eligible scripted-reply keys (AC-1/AC-2) — every language
+# The 11 language-eligible scripted-reply keys (AC-1/AC-2) — every language
 # block must carry all of these; the structural key-parity test asserts it.
+# `reset_confirmation` added 2026-07-27 (CR-011/ADR-013 Task 6).
 SCRIPTED_REPLY_KEYS: tuple[str, ...] = (
     "greeting_direct",
     "greeting_candidate_confirm",
@@ -46,6 +48,7 @@ SCRIPTED_REPLY_KEYS: tuple[str, ...] = (
     "asr_fallback",
     "unresolved_doubt_escalation",
     "off_turn_nudge",
+    "reset_confirmation",
 )
 
 MODE_KEYWORD_FIELDS: tuple[str, str] = ("mode_voice_keywords", "mode_text_keywords")
@@ -123,6 +126,16 @@ def language_choice_prompt() -> str:
 
 def language_choice_reask() -> str:
     return str(_load()[_LANGUAGE_CHOICE_KEY]["reask"])
+
+
+def get_reset_keyword() -> str:
+    """CR-011/ADR-013 Task 6: the reserved `TESTAIRESET` literal-text
+    token, config-driven (not hardcoded in `turn_processor.py`) — a single
+    global token, not per-language (CR-011 Open question 5: this is an
+    internal TAP-team tool, not child-facing UX). Matched case-insensitively/
+    trimmed at the call site.
+    """
+    return str(_load()[_RESET_KEYWORD_KEY]["keyword"])
 
 
 def all_language_keys() -> list[str]:

@@ -26,6 +26,7 @@ from app.config.scripted_replies import (
     all_language_keys,
     get_language_choice_keywords,
     get_mode_choice_keywords,
+    get_reset_keyword,
     get_scripted_reply,
     language_choice_prompt,
     language_choice_reask,
@@ -66,6 +67,23 @@ def test_every_language_block_has_all_10_reply_keys_and_keyword_fields():
 def test_language_choice_block_has_prompt_and_reask():
     assert language_choice_prompt()
     assert language_choice_reask()
+
+
+# ---- _reset_keyword / reset_confirmation (CR-011/ADR-013 Task 6) ----------
+
+
+def test_get_reset_keyword_is_testairreset():
+    assert get_reset_keyword() == "TESTAIRESET"
+
+
+def test_reset_confirmation_present_and_language_specific():
+    # A per-item check (L-021) that reset_confirmation is genuinely
+    # per-language content, not the same English string copy-pasted into
+    # every block — mirrors the existing greeting_direct spot-check above.
+    assert get_scripted_reply("reset_confirmation", "Hindi") != get_scripted_reply(
+        "reset_confirmation", "English"
+    )
+    assert get_scripted_reply("reset_confirmation", "English")
 
 
 # ---- get_scripted_reply fallback contract ---------------------------------

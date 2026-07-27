@@ -16,6 +16,8 @@ from app.tools.lms_client import (
     GET_NEXT_CONTENT_METHOD,
     GET_QUIZ_QUESTION_METHOD,
     GET_STUDENT_METHOD,
+    REGISTER_TEST_STUDENT_METHOD,
+    RESET_TEST_STUDENT_METHOD,
     SAVE_SUBMISSION_METHOD,
     LmsApiError,
     QuizQuestionDetails,
@@ -270,12 +272,14 @@ async def test_get_next_content_with_token_unknown_student_not_found_shape():
     assert content is None
 
 
-def test_client_has_exactly_five_public_methods_no_scope_creep():
+def test_client_has_exactly_seven_public_methods_no_scope_creep():
     """Guards against scope creep: no InteractionLog writes, no new
-    whitelisted APIs — the client's public surface is exactly these 5
+    whitelisted APIs — the client's public surface is exactly these 7
     methods (+ aclose for lifecycle). `start_quiz` joined 2026-07-17 under
     F-028; registration made PERMANENT by CR-031's approval (decision D-8,
-    [[HANDOVER-TAP-AGENT-2026-07-17]]). A 6th requires a PRD/CR.
+    [[HANDOVER-TAP-AGENT-2026-07-17]]). `register_test_student`/
+    `reset_test_student` joined 2026-07-27 under CR-011/ADR-013 tasks 6/7
+    (F-071 reply) — an 8th requires a PRD/CR.
     """
     public_methods = {
         name
@@ -288,6 +292,8 @@ def test_client_has_exactly_five_public_methods_no_scope_creep():
         "get_quiz_question_details",
         "save_submission",
         "start_quiz",
+        "register_test_student",
+        "reset_test_student",
         "aclose",
     }
     assert public_methods == expected
@@ -375,3 +381,166 @@ async def test_get_quiz_question_details_raw_is_scrubbed_of_correct_option() -> 
     assert "correct_option" not in details.raw
     assert "correct_option_text" not in details.raw
     assert details.hint == "Think about borrowing."
+
+
+# ---- register_test_student / reset_test_student (CR-011/ADR-013 tasks 6/7,
+# 2026-07-27 CONTRACT UPDATE, F-071 reply) --------------------------------
+#
+# Both are standard Frappe {"message": {...}} envelopes (NOT
+# get_next_content's flat @glific_response shape) — fixtures below mirror
+# the LIVE response shapes recorded in the F-071 reply / AD-002's VERIFIED
+# external-contracts rows verbatim.
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_register_test_student_created_success() -> None:
+    route = respx.post(f"{BASE_URL}/api/method/{REGISTER_TEST_STUDENT_METHOD}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "message": {
+                    "status_code": 200,
+                    "success": True,
+                    "student_id": "ST00491460",
+                    "pe_name": "01qn841h6t",
+                    "created_student": True,
+                    "created_pe": True,
+                }
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key", frappe_token="key:secret")
+    result = await client.register_test_student(
+        name1="Buddy Name", phone="9876500011", glific_id="12345", grade="5"
+    )
+    await client.aclose()
+
+    assert result.success is True
+    assert result.student_id == "ST00491460"
+    assert result.pe_name == "01qn841h6t"
+    assert result.created_student is True
+    assert result.created_pe is True
+    assert result.status_code == 200
+
+    sent_body = route.calls.last.request.content
+    import json as _json
+
+    assert _json.loads(sent_body)["name1"] == "Buddy Name"
+    assert _json.loads(sent_body)["phone"] == "9876500011"
+    assert _json.loads(sent_body)["glific_id"] == "12345"
+    assert _json.loads(sent_body)["grade"] == "5"
+    # Same token-auth header the existing 5 methods send — no new credential.
+    assert route.calls.last.request.headers["authorization"] == "token key:secret"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_register_test_student_idempotent_existing_returns_same_id() -> None:
+    """Idempotent on (phone, name1): a repeat call for an existing tester
+    returns the SAME student_id with created_student=False (live-verified
+    fact, F-071 reply).
+    """
+    respx.post(f"{BASE_URL}/api/method/{REGISTER_TEST_STUDENT_METHOD}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "message": {
+                    "status_code": 200,
+                    "success": True,
+                    "student_id": "ST00491460",
+                    "pe_name": "01qn841h6t",
+                    "created_student": False,
+                    "created_pe": False,
+                }
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    result = await client.register_test_student(name1="Buddy Name", phone="9876500011")
+    await client.aclose()
+
+    assert result.success is True
+    assert result.student_id == "ST00491460"
+    assert result.created_student is False
+    assert result.created_pe is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_register_test_student_error_path_5xx() -> None:
+    respx.post(f"{BASE_URL}/api/method/{REGISTER_TEST_STUDENT_METHOD}").mock(
+        return_value=httpx.Response(500, text="internal error")
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    with pytest.raises(LmsApiError):
+        await client.register_test_student(name1="Buddy Name", phone="9876500011")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_register_test_student_unexpected_shape_raises() -> None:
+    """A response with no `message` dict (e.g. the flat @glific_response
+    shape get_next_content uses) is NOT silently tolerated — this endpoint's
+    contract is the standard Frappe envelope, so a mismatch is a loud error,
+    not a guessed fallback.
+    """
+    respx.post(f"{BASE_URL}/api/method/{REGISTER_TEST_STUDENT_METHOD}").mock(
+        return_value=httpx.Response(200, json={"success": True, "student_id": "ST00491460"})
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    with pytest.raises(LmsApiError):
+        await client.register_test_student(name1="Buddy Name", phone="9876500011")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reset_test_student_success() -> None:
+    route = respx.post(f"{BASE_URL}/api/method/{RESET_TEST_STUDENT_METHOD}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "message": {
+                    "success": True,
+                    "student_id": "ST00491460",
+                    "submissions_deleted": 1,
+                    "pe_reset": True,
+                }
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key", frappe_token="key:secret")
+    result = await client.reset_test_student("ST00491460")
+    await client.aclose()
+
+    assert result.success is True
+    assert result.student_id == "ST00491460"
+    assert result.submissions_deleted == 1
+    assert result.pe_reset is True
+
+    import json as _json
+
+    sent = _json.loads(route.calls.last.request.content)
+    # `_call` always prepends `api_key` to every payload (all 7 methods) —
+    # the reset call is no exception, alongside the `student_id`/
+    # `push_to_glific` fields this method itself adds.
+    assert sent == {
+        "api_key": "test-api-key",
+        "student_id": "ST00491460",
+        "push_to_glific": False,
+    }
+    assert route.calls.last.request.headers["authorization"] == "token key:secret"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reset_test_student_error_path_5xx() -> None:
+    respx.post(f"{BASE_URL}/api/method/{RESET_TEST_STUDENT_METHOD}").mock(
+        return_value=httpx.Response(500, text="internal error")
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    with pytest.raises(LmsApiError):
+        await client.reset_test_student("ST00491460")
+    await client.aclose()

@@ -5,7 +5,8 @@
 # seam: every language marked `supported: true|false` in language_map.yaml
 # (Punjabi included — it's scoped as fine for scripted TEXT even though its
 # STT/TTS falls back to English, see language_map.yaml + CR-007) has a
-# dedicated block below, covering all 10 language-eligible reply keys plus
+# dedicated block below, covering all 11 language-eligible reply keys
+# (`reset_confirmation` added 2026-07-27, CR-011/ADR-013 Task 6) plus
 # mode_voice_keywords/mode_text_keywords/language_name_keywords.
 #
 # Translations are MODEL-AUTHORED for this CR — a native-speaker/TAP-team
@@ -40,6 +41,7 @@ English:
   asr_fallback: "Let's switch to typing for now — you can type your reply instead."
   unresolved_doubt_escalation: "It looks like this one's tricky today. I'm going to get a grown-up to help explain it properly. You did great trying!"
   off_turn_nudge: "I understand — let's come back to that in a moment. Shall we continue with today's activity?"
+  reset_confirmation: "All done! Your test progress has been reset to the very beginning."
   mode_voice_keywords: ["voice"]
   mode_text_keywords: ["text", "type"]
   language_name_keywords: ["english"]
@@ -55,6 +57,7 @@ Hindi:
   asr_fallback: "चलो अभी टाइपिंग पर चलते हैं — तुम अपना जवाब टाइप करके भेज सकते हो।"
   unresolved_doubt_escalation: "लगता है आज यह सवाल थोड़ा मुश्किल है। मैं एक बड़े व्यक्ति को इसे ठीक से समझाने के लिए बुला रहा हूँ। कोशिश करने के लिए शाबाश!"
   off_turn_nudge: "समझ गया — चलो थोड़ी देर में उस पर वापस आते हैं। क्या हम आज की गतिविधि जारी रखें?"
+  reset_confirmation: "हो गया! तुम्हारी टेस्ट प्रगति शुरू से रीसेट कर दी गई है।"
   mode_voice_keywords: ["आवाज़", "आवाज", "awaaz", "बोलकर", "बोलो"]
   mode_text_keywords: ["टाइप", "type", "likh", "लिख", "टाइप करके"]
   language_name_keywords: ["hindi", "हिंदी", "हिन्दी"]
@@ -70,6 +73,7 @@ Bengali:
   asr_fallback: "চলো এখন টাইপ করি — তুমি তোমার উত্তর টাইপ করে পাঠাতে পারো।"
   unresolved_doubt_escalation: "মনে হচ্ছে আজ এটা একটু কঠিন। আমি একজন বড়কে ডাকছি এটা ভালোভাবে বুঝিয়ে দেওয়ার জন্য। চেষ্টা করার জন্য দারুণ কাজ করেছো!"
   off_turn_nudge: "বুঝেছি — চলো একটু পরে ওটাতে ফিরে আসি। আজকের কাজ কি আমরা চালিয়ে যাবো?"
+  reset_confirmation: "হয়ে গেছে! তোমার টেস্ট অগ্রগতি একদম শুরু থেকে রিসেট করা হয়েছে।"
   mode_voice_keywords: ["ভয়েস", "voice", "কথা বলে", "বলে"]
   mode_text_keywords: ["টাইপ", "type", "লিখে"]
   language_name_keywords: ["bengali", "bangla", "বাংলা"]
@@ -85,6 +89,7 @@ Tamil:
   asr_fallback: "இப்போது தட்டச்சுக்கு மாறுவோம் — நீ உன் பதிலை தட்டச்சு செய்து அனுப்பலாம்."
   unresolved_doubt_escalation: "இன்று இது கொஞ்சம் கடினமாக இருக்கிறது போல் தெரிகிறது. இதை சரியாக விளக்க ஒரு பெரியவரை அழைக்கிறேன். முயற்சி செய்ததற்கு பாராட்டுக்கள்!"
   off_turn_nudge: "புரிகிறது — கொஞ்ச நேரத்தில் அதற்குத் திரும்புவோம். இன்றைய செயல்பாட்டைத் தொடரலாமா?"
+  reset_confirmation: "முடிந்தது! உன் டெஸ்ட் முன்னேற்றம் முதலிலிருந்து மீட்டமைக்கப்பட்டது."
   mode_voice_keywords: ["குரல்", "voice", "பேசி", "பேசுவது"]
   mode_text_keywords: ["தட்டச்சு", "type", "எழுதி"]
   language_name_keywords: ["tamil", "தமிழ்"]
@@ -100,6 +105,7 @@ Telugu:
   asr_fallback: "ఇప్పుడు టైపింగ్‌కి మారదాం — నువ్వు నీ జవాబును టైప్ చేసి పంపవచ్చు."
   unresolved_doubt_escalation: "ఈ రోజు ఇది కొంచెం కష్టంగా ఉన్నట్టు అనిపిస్తోంది. దీన్ని సరిగ్గా వివరించడానికి నేను ఒక పెద్దవారిని పిలుస్తున్నాను. ప్రయత్నించినందుకు శభాష్!"
   off_turn_nudge: "అర్థమైంది — కొద్ది సేపట్లో దానికి తిరిగి వద్దాం. ఈ రోజు కార్యకలాపాన్ని కొనసాగిద్దామా?"
+  reset_confirmation: "పూర్తయింది! నీ టెస్ట్ పురోగతి మొదటి నుండి రీసెట్ చేయబడింది."
   mode_voice_keywords: ["వాయిస్", "voice", "మాట్లాడి", "మాటల్లో"]
   mode_text_keywords: ["టైప్", "type", "రాసి"]
   language_name_keywords: ["telugu", "తెలుగు"]
@@ -115,6 +121,7 @@ Marathi:
   asr_fallback: "आता आपण टायपिंगकडे वळूया — तू तुझं उत्तर टाइप करून पाठवू शकतोस."
   unresolved_doubt_escalation: "आज हे थोडं अवघड वाटतंय. हे नीट समजावण्यासाठी मी एका मोठ्या माणसाला बोलावत आहे. प्रयत्न केल्याबद्दल शाब्बास!"
   off_turn_nudge: "समजलं — थोड्या वेळाने त्यावर परत येऊया. आजचा उपक्रम पुढे सुरू ठेवूया का?"
+  reset_confirmation: "झालं! तुझी टेस्ट प्रगती अगदी सुरुवातीपासून रीसेट केली आहे."
   mode_voice_keywords: ["आवाज", "voice", "बोलून"]
   mode_text_keywords: ["टाइप", "type", "लिहून"]
   language_name_keywords: ["marathi", "मराठी"]
@@ -130,6 +137,7 @@ Gujarati:
   asr_fallback: "ચાલો હવે ટાઇપિંગ પર જઈએ — તું તારો જવાબ ટાઇપ કરીને મોકલી શકે છે."
   unresolved_doubt_escalation: "આજે આ થોડું અઘરું લાગે છે. આને બરાબર સમજાવવા માટે હું એક મોટી વ્યક્તિને બોલાવી રહ્યો છું. પ્રયત્ન કરવા બદલ શાબાશ!"
   off_turn_nudge: "સમજાયું — થોડી વારમાં એના પર પાછા આવીએ. શું આપણે આજની પ્રવૃત્તિ ચાલુ રાખીએ?"
+  reset_confirmation: "થઈ ગયું! તારી ટેસ્ટ પ્રગતિ શરૂઆતથી રીસેટ કરવામાં આવી છે."
   mode_voice_keywords: ["અવાજ", "voice", "બોલીને"]
   mode_text_keywords: ["ટાઇપ", "type", "લખીને"]
   language_name_keywords: ["gujarati", "ગુજરાતી"]
@@ -145,6 +153,7 @@ Kannada:
   asr_fallback: "ಈಗ ಟೈಪಿಂಗ್‌ಗೆ ಬದಲಾಗೋಣ — ನೀನು ನಿನ್ನ ಉತ್ತರವನ್ನು ಟೈಪ್ ಮಾಡಿ ಕಳುಹಿಸಬಹುದು."
   unresolved_doubt_escalation: "ಇಂದು ಇದು ಸ್ವಲ್ಪ ಕಷ್ಟ ಎನಿಸುತ್ತಿದೆ. ಇದನ್ನು ಸರಿಯಾಗಿ ವಿವರಿಸಲು ನಾನು ಒಬ್ಬ ದೊಡ್ಡವರನ್ನು ಕರೆಯುತ್ತಿದ್ದೇನೆ. ಪ್ರಯತ್ನಿಸಿದ್ದಕ್ಕೆ ಶಹಬ್ಬಾಸ್!"
   off_turn_nudge: "ಅರ್ಥವಾಯಿತು — ಸ್ವಲ್ಪ ಸಮಯದಲ್ಲಿ ಅದಕ್ಕೆ ಹಿಂತಿರುಗೋಣ. ಇಂದಿನ ಚಟುವಟಿಕೆಯನ್ನು ಮುಂದುವರಿಸೋಣವೇ?"
+  reset_confirmation: "ಮುಗಿಯಿತು! ನಿನ್ನ ಟೆಸ್ಟ್ ಪ್ರಗತಿಯನ್ನು ಮೊದಲಿನಿಂದ ಮರುಹೊಂದಿಸಲಾಗಿದೆ."
   mode_voice_keywords: ["ಧ್ವನಿ", "voice", "ಮಾತನಾಡಿ"]
   mode_text_keywords: ["ಟೈಪ್", "type", "ಬರೆದು"]
   language_name_keywords: ["kannada", "ಕನ್ನಡ"]
@@ -160,6 +169,7 @@ Malayalam:
   asr_fallback: "നമുക്ക് ഇപ്പോൾ ടൈപ്പിംഗിലേക്ക് മാറാം — നിനക്ക് നിന്റെ മറുപടി ടൈപ്പ് ചെയ്ത് അയക്കാം."
   unresolved_doubt_escalation: "ഇന്ന് ഇത് അല്പം ബുദ്ധിമുട്ടാണെന്ന് തോന്നുന്നു. ഇത് ശരിയായി വിശദീകരിക്കാൻ ഞാൻ ഒരു മുതിർന്ന ആളെ വിളിക്കുന്നു. ശ്രമിച്ചതിന് കൊള്ളാം!"
   off_turn_nudge: "മനസ്സിലായി — കുറച്ച് കഴിഞ്ഞ് അതിലേക്ക് തിരിച്ചുവരാം. ഇന്നത്തെ പ്രവർത്തനം നമുക്ക് തുടരാമോ?"
+  reset_confirmation: "കഴിഞ്ഞു! നിന്റെ ടെസ്റ്റ് പുരോഗതി ആദ്യം മുതൽ പുനഃക്രമീകരിച്ചു."
   mode_voice_keywords: ["ശബ്ദം", "voice", "പറഞ്ഞ്"]
   mode_text_keywords: ["ടൈപ്പ്", "type", "എഴുതി"]
   language_name_keywords: ["malayalam", "മലയാളം"]
@@ -179,6 +189,7 @@ Punjabi:
   asr_fallback: "ਆਓ ਹੁਣ ਟਾਈਪਿੰਗ ਵੱਲ ਚੱਲੀਏ — ਤੂੰ ਆਪਣਾ ਜਵਾਬ ਟਾਈਪ ਕਰਕੇ ਭੇਜ ਸਕਦਾ ਹੈਂ।"
   unresolved_doubt_escalation: "ਲੱਗਦਾ ਹੈ ਅੱਜ ਇਹ ਥੋੜ੍ਹਾ ਔਖਾ ਹੈ। ਮੈਂ ਇਸਨੂੰ ਠੀਕ ਤਰ੍ਹਾਂ ਸਮਝਾਉਣ ਲਈ ਇੱਕ ਵੱਡੇ ਵਿਅਕਤੀ ਨੂੰ ਬੁਲਾ ਰਿਹਾ ਹਾਂ। ਕੋਸ਼ਿਸ਼ ਕਰਨ ਲਈ ਸ਼ਾਬਾਸ਼!"
   off_turn_nudge: "ਸਮਝ ਗਿਆ — ਆਓ ਥੋੜ੍ਹੀ ਦੇਰ ਬਾਅਦ ਉਸ ਵੱਲ ਵਾਪਸ ਆਈਏ। ਕੀ ਅਸੀਂ ਅੱਜ ਦੀ ਗਤੀਵਿਧੀ ਜਾਰੀ ਰੱਖੀਏ?"
+  reset_confirmation: "ਹੋ ਗਿਆ! ਤੇਰੀ ਟੈਸਟ ਤਰੱਕੀ ਸ਼ੁਰੂ ਤੋਂ ਰੀਸੈੱਟ ਕਰ ਦਿੱਤੀ ਗਈ ਹੈ।"
   mode_voice_keywords: ["ਆਵਾਜ਼", "voice", "ਬੋਲ ਕੇ"]
   mode_text_keywords: ["ਟਾਈਪ", "type", "ਲਿਖ ਕੇ"]
   language_name_keywords: ["punjabi", "ਪੰਜਾਬੀ"]
@@ -194,6 +205,7 @@ Urdu:
   asr_fallback: "چلو اب ٹائپنگ کی طرف چلتے ہیں — تم اپنا جواب ٹائپ کر کے بھیج سکتے ہو۔"
   unresolved_doubt_escalation: "لگتا ہے آج یہ تھوڑا مشکل ہے۔ میں اسے ٹھیک طرح سمجھانے کے لیے ایک بڑے کو بلا رہا ہوں۔ کوشش کرنے کے لیے شاباش!"
   off_turn_nudge: "سمجھ گیا — چلو تھوڑی دیر میں اس کی طرف واپس آتے ہیں۔ کیا ہم آج کی سرگرمی جاری رکھیں؟"
+  reset_confirmation: "ہو گیا! تمہاری ٹیسٹ پیش رفت شروع سے دوبارہ ترتیب دے دی گئی ہے۔"
   mode_voice_keywords: ["آواز", "voice", "بول کر"]
   mode_text_keywords: ["ٹائپ", "type", "لکھ کر"]
   language_name_keywords: ["urdu", "اردو"]
@@ -201,3 +213,12 @@ Urdu:
 _language_choice:
   prompt: "Which language would you like to use? हिंदी (Hindi) / বাংলা (Bengali) / தமிழ் (Tamil) / తెలుగు (Telugu) / मराठी (Marathi) / ગુજરાતી (Gujarati) / ಕನ್ನಡ (Kannada) / മലയാളം (Malayalam) / ਪੰਜਾਬੀ (Punjabi) / اردو (Urdu) / English"
   reask: "Sorry, I didn't catch that. Please reply with one: Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati, Kannada, Malayalam, Punjabi, Urdu, or English."
+
+# CR-011/ADR-013 Task 6 (2026-07-27): the reserved TESTAIRESET keyword
+# meta-block, same "leading underscore = meta, not a language" convention
+# as `_language_choice` above. A SINGLE global token (CR-011 Open question
+# 5 — this is an internal TAP-team tool, not child-facing UX, so no
+# per-language variant is needed), matched case-insensitively/trimmed by
+# `app/worker/turn_processor.py` via `get_reset_keyword()`.
+_reset_keyword:
+  keyword: "TESTAIRESET"

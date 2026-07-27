@@ -47,10 +47,21 @@ def test_session_store_is_the_only_module_writing_redis_hashes() -> None:
     )
 
 
-def test_save_submission_is_the_only_lms_write_call() -> None:
-    """`app/tools/lms_client.py`'s public surface has exactly one write
-    method (`save_submission`) — everything else is a read. Mirrors
-    tap-buddy's `test_client_has_no_other_methods` intent for this port.
+def test_lms_client_write_methods_are_the_known_whitelisted_set() -> None:
+    """`app/tools/lms_client.py`'s public surface has exactly THREE write
+    methods: `save_submission` (state authority's sole progress write,
+    unchanged), and CR-011/ADR-013's two newly-whitelisted test-flow writes
+    `register_test_student`/`reset_test_student` (2026-07-27, F-071 reply —
+    existing, live-verified Frappe endpoints registered in AD-002's
+    VERIFIED external-contracts rows, never an agent-invented state, L-001).
+
+    A naming-heuristic prefix check alone (this test's pre-CR-011 shape)
+    would silently MISS both new methods — neither starts with
+    save_/update_/create_/delete_ — so this test enumerates the known write
+    set explicitly instead: a REAL new write method (anything outside this
+    set) fails this assertion loudly rather than sneaking past a stale
+    heuristic. Mirrors tap-buddy's `test_client_has_no_other_methods` intent
+    for this port.
     """
     from app.tools.lms_client import TapLmsClient
 
@@ -59,10 +70,18 @@ def test_save_submission_is_the_only_lms_write_call() -> None:
         for name in dir(TapLmsClient)
         if not name.startswith("_") and callable(getattr(TapLmsClient, name))
     }
-    write_shaped_names = {
-        m for m in public_methods if m.startswith(("save_", "update_", "create_", "delete_"))
+    read_only_methods = {
+        "get_student_by_phone_and_name",
+        "get_next_content",
+        "get_quiz_question_details",
+        # Not a pure read (creates/resumes a quiz attempt server-side, F-028)
+        # but not a progress WRITE this test is guarding either — unchanged
+        # classification from its own docstring.
+        "start_quiz",
+        "aclose",
     }
-    assert write_shaped_names == {"save_submission"}
+    write_methods = public_methods - read_only_methods
+    assert write_methods == {"save_submission", "register_test_student", "reset_test_student"}
 
 
 def test_session_data_fields_are_conversational_not_enrollment_shaped() -> None:

@@ -65,3 +65,38 @@ async def test_mock_save_submission_records_call():
     assert result.success is True
     assert len(client.submissions) == 1
     assert client.submissions[0]["student_id"] == "STU-001"
+
+
+# ---- register_test_student / reset_test_student (CR-011/ADR-013 6/7) ------
+
+
+@pytest.mark.asyncio
+async def test_mock_register_test_student_creates_new_id():
+    client = MockTapLmsClient()
+    result = await client.register_test_student(name1="New Tester", phone="9000000001")
+    assert result.success is True
+    assert result.created_student is True
+    assert result.created_pe is True
+    assert result.student_id
+    assert len(client.register_test_student_calls) == 1
+    assert client.register_test_student_calls[0]["name1"] == "New Tester"
+
+
+@pytest.mark.asyncio
+async def test_mock_register_test_student_idempotent_on_phone_and_name():
+    client = MockTapLmsClient()
+    first = await client.register_test_student(name1="New Tester", phone="9000000001")
+    second = await client.register_test_student(name1="New Tester", phone="9000000001")
+    assert first.student_id == second.student_id
+    assert first.created_student is True
+    assert second.created_student is False
+
+
+@pytest.mark.asyncio
+async def test_mock_reset_test_student_records_call():
+    client = MockTapLmsClient()
+    result = await client.reset_test_student("STU-001")
+    assert result.success is True
+    assert result.student_id == "STU-001"
+    assert result.pe_reset is True
+    assert client.reset_test_student_calls == [{"student_id": "STU-001", "push_to_glific": False}]

@@ -28,6 +28,21 @@ genuinely cannot know the child's language before identity resolves. GAP 0
 that fires whenever identity resolution didn't yield a `tap_language` —
 self-retiring once the LMS starts returning one (see
 `app/core/identity.py`).
+
+CR-011/ADR-013 (2026-07-27 CONTRACT UPDATE, tasks 6/7): two deterministic,
+never-LLM-routed additions (L-006), both keyed off `lms_client`'s two new
+whitelisted methods (`app/tools/lms_client.py`):
+  - `TESTAIRESET` dispatch (Task 6) — a top-of-function literal-text match,
+    ahead of every other branch (including the audio-transcription block),
+    same class as the existing mode/language-choice keyword matching. NO
+    eligibility guard (Option B): wipes the Redis session and calls
+    `reset_test_student` with the session-resolved `student_id` (L-014),
+    unconditionally, for whichever identity happens to be resolved.
+  - Auto-provisioning on a genuinely not-found identity (Task 7) — the
+    zero-candidates branch inside IDENTITY_CONFIRMATION now calls
+    `register_test_student` (a SINGLE call; supersedes CR-011's originally
+    -assumed two-step register-then-re-resolve shape) instead of
+    dead-ending in "I couldn't find that name...".
 """
 
 from __future__ import annotations
@@ -39,6 +54,7 @@ from typing import Any, Protocol
 from app.config.scripted_replies import (
     get_language_choice_keywords,
     get_mode_choice_keywords,
+    get_reset_keyword,
     get_scripted_reply,
     language_choice_prompt,
     language_choice_reask,
@@ -60,6 +76,7 @@ from app.core.state_machine import (
 from app.core.turn_logic import ModelRouterLike, handle_low_confidence_asr, run_turn
 from app.ingress.glific_payload import GlificWebhookPayload
 from app.ingress.media import synthesize_and_store, transcribe_inbound_media
+from app.tools.lms_client import LmsApiError
 from app.worker.distress_gate import _escalate_for_distress
 from app.worker.escalation import open_ticket_for_escalation
 from app.worker.session_store import RedisSessionStore
@@ -182,6 +199,54 @@ async def process_turn(
 
     session = await session_store.load_session(payload.contact_id)
 
+    # ---- CR-011/ADR-013 Task 6: TESTAIRESET literal-keyword dispatch ----
+    # Deterministic, config-driven (L-006 — same class as the existing
+    # mode/language-choice keyword matching), placed ahead of EVERY other
+    # branch below (including the audio-transcription block), per CR-011
+    # §3. Option B (Nithun's explicit choice): NO eligibility guard —
+    # whichever student_id is currently resolved on the session gets reset
+    # unconditionally, test-registered or real-shaped alike. A session with
+    # nothing resolved yet (session is None, or student_id unset) is a
+    # structural no-op — there is nothing to call reset_test_student with,
+    # not an eligibility check.
+    if user_text.strip().casefold() == get_reset_keyword().casefold():
+        if session is not None and session.identity.student_id:
+            # L-014: the id passed to reset_test_student is the
+            # SESSION-resolved student_id — never a model-supplied or
+            # re-derived one. Captured into locals BEFORE the session is
+            # deleted below.
+            reset_student_id = session.identity.student_id
+            reset_tap_language = session.identity.tap_language
+            await session_store.delete_session(payload.contact_id)
+            try:
+                await lms_client.reset_test_student(reset_student_id)
+            except LmsApiError:
+                # A downstream reset failure never crashes the worker or
+                # blocks the confirmation reply (mirrors
+                # maybe_rearm_turn_flow's never-raises discipline for a
+                # non-core-conversation side effect) — the Redis session is
+                # already wiped either way.
+                logger.exception(
+                    "reset_test_student failed for contact=%s student_id=%s",
+                    payload.contact_id,
+                    reset_student_id,
+                )
+            await glific_client.send_text(
+                payload.contact_id, get_scripted_reply("reset_confirmation", reset_tap_language)
+            )
+            return TurnProcessingResult(handled=True, reply_sent=True)
+
+        # No-op: nothing resolved yet to reset (session is None, or
+        # student_id unset) — falls through to the generic `fallback`
+        # scripted reply; a structural consequence of having no
+        # student_id to call with, not an eligibility check (CR-011 Edge
+        # cases).
+        await glific_client.send_text(
+            payload.contact_id,
+            get_scripted_reply("fallback", session.identity.tap_language if session else None),
+        )
+        return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+
     # ---- BR-004 Task 2/3: audio-turn transcription, ASR-failure
     # clarification/fallback/escalation, and the worker-side distress check
     # — ALL placed here, before any of the state branches below, mirroring
@@ -276,8 +341,9 @@ async def process_turn(
         return TurnProcessingResult(handled=True, session=session, reply_sent=True)
 
     if session.state == SessionState.IDENTITY_CONFIRMATION and not session.identity.candidates:
+        buddy_name = user_text.strip()
         resolution = await resolve_identity_by_name(
-            payload.contact_id, payload.phone, user_text.strip(), lms_client
+            payload.contact_id, payload.phone, buddy_name, lms_client
         )
         session = resolution.session
         if resolution.needs_confirmation:
@@ -291,9 +357,62 @@ async def process_turn(
             )
             return TurnProcessingResult(handled=True, session=session, reply_sent=True)
         if not resolution.candidates:
+            # CR-011/ADR-013 Task 7 (2026-07-27 CONTRACT UPDATE): a
+            # genuinely not-found identity now auto-provisions a real TAP
+            # LMS test student via the SINGLE-call `register_test_student`
+            # (creates Student+ProgramEnrollment in a server-hardcoded test
+            # batch and returns student_id directly — supersedes CR-011's
+            # originally-assumed two-step register-then-re-resolve shape;
+            # see AD-002's VERIFIED external-contracts rows) rather than
+            # dead-ending in "I couldn't find that name...". A registration
+            # failure (LmsApiError, or a response with success=False/no
+            # student_id — a genuine business rejection, not the happy
+            # path) falls back to today's reply instead of crashing or
+            # silently retrying a second time this turn.
+            try:
+                registration = await lms_client.register_test_student(
+                    name1=buddy_name,
+                    phone=payload.phone,
+                    glific_id=payload.contact_id,
+                )
+            except LmsApiError:
+                logger.exception(
+                    "register_test_student failed for contact=%s; falling back to "
+                    "'couldn't find that name' reply",
+                    payload.contact_id,
+                )
+                registration = None
+
+            if registration is not None and registration.success and registration.student_id:
+                # Treated exactly like a single-match resolution: this
+                # endpoint never returns a tap_language, so the same
+                # self-retiring GAP-0 check the single-match branch below
+                # uses applies here too. session.state is already
+                # IDENTITY_CONFIRMATION (set by resolve_identity_by_name's
+                # zero-candidate new_session call above), so
+                # IDENTITY_CONFIRMATION -> LANGUAGE_CHOICE is a directly
+                # valid transition — no restore-then-transition dance
+                # needed (unlike the found single-match branch below,
+                # which pre-sets state=GREETING via a different
+                # new_session call).
+                session.identity.student_id = registration.student_id
+                session.identity.child_name = buddy_name
+                session.identity.tap_language = None
+                transition(session, SessionState.LANGUAGE_CHOICE)
+                await session_store.save_session(session)
+                await glific_client.send_text(payload.contact_id, language_choice_prompt())
+                return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+
+            if registration is not None:
+                logger.warning(
+                    "register_test_student returned a non-success/empty-id response for "
+                    "contact=%s; falling back to 'couldn't find that name' reply",
+                    payload.contact_id,
+                )
             await session_store.save_session(session)
-            # PRE-IDENTITY LITERAL (#3 of 4): no candidate resolved at all —
-            # still no identity, so still no language to look up by.
+            # PRE-IDENTITY LITERAL (#3 of 4): no candidate resolved at all,
+            # and auto-provisioning also failed — still no identity, so
+            # still no language to look up by.
             await glific_client.send_text(
                 payload.contact_id,
                 "I couldn't find that name for this phone number. Can you check the spelling?",

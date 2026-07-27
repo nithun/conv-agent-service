@@ -1,12 +1,16 @@
 """TAP LMS (Frappe) client — the COMPLETE LMS integration surface.
 
 Ported from `tap-buddy/src/tap_buddy/clients/lms_client.py` (CR-004 Task
-12). Exactly 5 whitelisted endpoints (`start_quiz` added 2026-07-17 under
-F-028, permanently registered via CR-031/D-8). No other method exists on
-this client, and none should ever be added without a corresponding PRD/CR
-— `save_submission` is the only unconditional write path (state authority,
-L-001); `start_quiz` creates/resumes a quiz attempt (deterministic,
-once-per-quiz, resume-idempotent — see its docstring).
+12). 7 whitelisted endpoints (`start_quiz` added 2026-07-17 under F-028,
+permanently registered via CR-031/D-8; `register_test_student`/
+`reset_test_student` added 2026-07-27 under CR-011/ADR-013, tasks 6/7). No
+other method exists on this client, and none should ever be added without a
+corresponding PRD/CR — `save_submission`, `register_test_student`, and
+`reset_test_student` are the three unconditional write paths (state
+authority, L-001 — all three are existing/newly-whitelisted Frappe
+endpoints, never an agent-invented state); `start_quiz` creates/resumes a
+quiz attempt (deterministic, once-per-quiz, resume-idempotent — see its
+docstring).
 
 Live-verified dotted paths (tap-buddy/CLAUDE.md, 2026-07-03, against
 lms.evalix.xyz with a real API key — re-verification against THIS stack is
@@ -19,6 +23,24 @@ are unchanged):
     (requires Frappe token auth via `Authorization: token <value>` —
     allow_guest=False on the live server, NOT a whitelist gap. See
     Settings.tap_lms_token.)
+
+CR-011/ADR-013 (2026-07-27 CONTRACT UPDATE, F-071 reply, live-verified on
+lms.evalix.xyz 2026-07-25 — AD-002's VERIFIED external-contracts rows are
+the authoritative source, not the CR body's original `register_student`
+assumption):
+  - register_test_student -> tap_lms.summer_program.cr011_test_flow.register_test_student
+    Creates Student+ProgramEnrollment in a server-hardcoded TEST batch
+    (course/batch are NEVER passed by this client) and returns the new
+    `student_id` directly — a SINGLE call, not a create-then-re-resolve
+    round trip. Idempotent on (phone, name1). Response envelope is the
+    standard Frappe `{"message": {...}}` shape — NOT get_next_content's
+    flat `@glific_response` shape.
+  - reset_test_student     -> tap_lms.summer_program.cr011_test_flow.reset_test_student
+    Full-zero reset (also deletes Submission rows), unconditional — no
+    dummy-only/eligibility guard (Option B, ADR-013). Same `{"message":
+    {...}}` envelope.
+  Both use the SAME `Authorization: token <key>:<secret>` header the other
+  5 methods already send via `frappe_token` — no new credential.
 """
 
 from __future__ import annotations
@@ -33,6 +55,9 @@ GET_NEXT_CONTENT_METHOD = "tap_lms.summer_program.student_progression_sp.get_nex
 GET_QUIZ_QUESTION_METHOD = "tap_lms.api.get_quiz_question_details"
 SAVE_SUBMISSION_METHOD = "tap_lms.summer_program.save_submission.save_submission"
 START_QUIZ_METHOD = "tap_lms.summer_program.student_progression_sp.start_quiz"
+# CR-011/ADR-013 tasks 6/7 (2026-07-27 CONTRACT UPDATE, F-071 reply).
+REGISTER_TEST_STUDENT_METHOD = "tap_lms.summer_program.cr011_test_flow.register_test_student"
+RESET_TEST_STUDENT_METHOD = "tap_lms.summer_program.cr011_test_flow.reset_test_student"
 
 
 class LmsApiError(Exception):
@@ -95,6 +120,36 @@ class SubmissionResult:
     message: str | None = None
 
 
+@dataclass
+class RegisterTestStudentResult:
+    """CR-011/ADR-013 Task 7 auto-provision write result. `student_id` is
+    the newly-created (or, on a repeat call for the same phone+name1,
+    pre-existing — `created_student=False`) `Student` record, returned
+    directly by the endpoint — no separate re-resolve call needed (2026-07-27
+    CONTRACT UPDATE supersedes CR-011's originally-assumed two-step shape).
+    """
+
+    success: bool
+    student_id: str
+    pe_name: str | None = None
+    created_student: bool = False
+    created_pe: bool = False
+    status_code: int | None = None
+
+
+@dataclass
+class ResetTestStudentResult:
+    """CR-011/ADR-013 Task 6 TESTAIRESET write result. Full-zero reset
+    (also deletes `Submission` rows) — no dummy-only/eligibility guard
+    (Option B).
+    """
+
+    success: bool
+    student_id: str
+    submissions_deleted: int = 0
+    pe_reset: bool = False
+
+
 _ANSWER_LEAK_KEY_PREFIX = "correct_option"
 
 
@@ -132,11 +187,14 @@ class QuizStartResult:
 
 
 class TapLmsClient:
-    """The complete TAP LMS integration surface — exactly 5 methods. Do not
-    add a 6th without a PRD/CR. (The 5th, `start_quiz`, was added 2026-07-17
-    under F-028 — nithun-directed design; registration made PERMANENT by
-    CR-031's approval, decision D-8, [[HANDOVER-TAP-AGENT-2026-07-17]]:
-    all 5 endpoints are formally registered consumers.)
+    """The complete TAP LMS integration surface — exactly 7 methods. Do not
+    add an 8th without a PRD/CR. (The 5th, `start_quiz`, was added
+    2026-07-17 under F-028 — nithun-directed design; registration made
+    PERMANENT by CR-031's approval, decision D-8,
+    [[HANDOVER-TAP-AGENT-2026-07-17]]. The 6th/7th, `register_test_student`/
+    `reset_test_student`, were added 2026-07-27 under CR-011/ADR-013 tasks
+    6/7 — both existing, already-live-verified Frappe endpoints, registered
+    in AD-002's external-contracts table as VERIFIED rows, F-071 reply.)
     """
 
     def __init__(
@@ -295,4 +353,78 @@ class TapLmsClient:
             )
         return SubmissionResult(
             success=False, status="unknown", message="unrecognized response shape"
+        )
+
+    async def register_test_student(
+        self,
+        name1: str,
+        phone: str,
+        *,
+        glific_id: str | None = None,
+        grade: str | None = None,
+        gender: str | None = None,
+    ) -> RegisterTestStudentResult:
+        """CR-011/ADR-013 Task 7 — the auto-provision write for a genuinely
+        not-found identity. A SINGLE call: creates `Student`+
+        `ProgramEnrollment` in a server-hardcoded TEST batch (course/batch
+        are NEVER part of this payload — the server owns that mapping) and
+        returns the new `student_id` directly (2026-07-27 CONTRACT UPDATE;
+        supersedes CR-011's originally-assumed two-step register-then-
+        re-resolve shape via the frozen, PE-less `register_student`).
+        Idempotent on `(phone, name1)` — a repeat call for the same pair
+        returns the SAME `student_id` with `created_student=False`, so the
+        "found contact continues" path may also call this safely.
+        Response envelope is the standard Frappe `{"message": {...}}` shape
+        (read `response["message"]`) — NOT `get_next_content`'s flat
+        `@glific_response` shape.
+        """
+        payload: dict[str, Any] = {"name1": name1, "phone": phone}
+        if glific_id is not None:
+            payload["glific_id"] = glific_id
+        if grade is not None:
+            payload["grade"] = grade
+        if gender is not None:
+            payload["gender"] = gender
+        body = await self._call(REGISTER_TEST_STUDENT_METHOD, payload)
+        message = body.get("message")
+        if not isinstance(message, dict):
+            raise LmsApiError(
+                f"register_test_student: unexpected response shape (no 'message' dict): "
+                f"{body!r}"
+            )
+        return RegisterTestStudentResult(
+            success=bool(message.get("success", False)),
+            student_id=str(message.get("student_id") or ""),
+            pe_name=message.get("pe_name"),
+            created_student=bool(message.get("created_student", False)),
+            created_pe=bool(message.get("created_pe", False)),
+            status_code=message.get("status_code"),
+        )
+
+    async def reset_test_student(
+        self, student_id: str, *, push_to_glific: bool = False
+    ) -> ResetTestStudentResult:
+        """CR-011/ADR-013 Task 6 — the TESTAIRESET write. Full-zero reset
+        (also deletes the student's `Submission` rows) — unconditional, NO
+        dummy-only/eligibility guard (Option B, Nithun's explicit choice).
+        The caller (`app/worker/turn_processor.py`) is responsible for
+        passing the SESSION-resolved `student_id` — never a model-supplied
+        or re-derived one (L-014); this client does not enforce that
+        itself, it only makes the call. `push_to_glific` defaults False —
+        evalix feeds nothing back, so there is no callback to push.
+        """
+        body = await self._call(
+            RESET_TEST_STUDENT_METHOD,
+            {"student_id": student_id, "push_to_glific": push_to_glific},
+        )
+        message = body.get("message")
+        if not isinstance(message, dict):
+            raise LmsApiError(
+                f"reset_test_student: unexpected response shape (no 'message' dict): {body!r}"
+            )
+        return ResetTestStudentResult(
+            success=bool(message.get("success", False)),
+            student_id=str(message.get("student_id") or student_id),
+            submissions_deleted=int(message.get("submissions_deleted") or 0),
+            pe_reset=bool(message.get("pe_reset", False)),
         )
