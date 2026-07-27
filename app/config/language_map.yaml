@@ -72,14 +72,18 @@ Malayalam:
   supported: true
 
 Punjabi:
-  # Google STT supports pa-Guru-IN (Gurmukhi script locale); Google TTS has
-  # no dedicated Punjabi voice as of this build — falls back to Hindi TTS,
-  # STT still transcribes Punjabi speech via the pa-Guru-IN locale.
+  # F-037: `supported: false` -> resolve_locale() returns the ENTIRE English
+  # (_fallback.primary) entry for any unsupported language; it does NOT split
+  # per field. So a Punjabi speaker is actually transcribed with en-IN STT AND
+  # voiced with the English TTS voice — NOT pa-Guru-IN STT / Hindi TTS. The
+  # stt_locale/tts_voice values below are retained only as the aspirational
+  # per-field target should resolve_locale ever gain field-level fallback; they
+  # are inert today (nothing reads them while supported: false).
   stt_locale: pa-Guru-IN
   tts_voice: hi-IN-Standard-A
   tts_language_code: hi-IN
   supported: false
-  fallback_reason: "No dedicated Google TTS voice for Punjabi as of this build; STT locale exists but TTS falls back to Hindi."
+  fallback_reason: "supported:false -> resolve_locale returns the full English fallback (en-IN STT + English TTS), NOT a per-field pa-Guru-IN/Hindi split; the stt_locale/tts_voice above are inert aspirational values (F-037)."
 
 Urdu:
   stt_locale: ur-IN
