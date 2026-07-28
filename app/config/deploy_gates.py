@@ -94,7 +94,11 @@ def resolve_langfuse_host_gate(settings: Settings) -> None:
     - Anything else (any non-`"production"` environment, including an
       unset/empty one, regardless of `langfuse_host`'s value): no raise.
     """
-    if settings.environment == "production" and not _langfuse_host_is_self_hosted(
+    # environment compared case/whitespace-normalized so a typo like
+    # " Production " can't silently bypass this structural gate
+    # (code-review 2026-07-27 Low — ENVIRONMENT normalization).
+    env = settings.environment.strip().lower()
+    if env == "production" and not _langfuse_host_is_self_hosted(
         settings.langfuse_host
     ):
         raise RuntimeError(
@@ -121,7 +125,9 @@ def resolve_lms_write_target_gate(settings: Settings) -> None:
       CR-009/CR-010's `!= "local"` shape.
     - Anything else (any non-`"production"` environment): no raise.
     """
-    if settings.environment == "production" and not _frappe_api_url_targets_evalix_restore(
+    # environment compared case/whitespace-normalized (same as GL-005-a).
+    env = settings.environment.strip().lower()
+    if env == "production" and not _frappe_api_url_targets_evalix_restore(
         settings.frappe_api_url
     ):
         raise RuntimeError(

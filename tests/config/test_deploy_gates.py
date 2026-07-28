@@ -149,3 +149,30 @@ def test_both_gates_are_pure_functions_no_client_side_effects() -> None:
 
     resolve_langfuse_host_gate(settings)
     resolve_lms_write_target_gate(settings)
+
+
+# ---- F-074: environment comparison is case/whitespace-normalized ------------
+# A structural GL-005 gate must not silently no-op on a casing/whitespace typo
+# in ENVIRONMENT (code-review 2026-07-27 Low).
+
+
+@pytest.mark.parametrize(
+    "environment", ["Production", "PRODUCTION", " production ", "production\n"]
+)
+def test_langfuse_gate_fires_on_casing_or_whitespace_variant_of_production(
+    environment: str,
+) -> None:
+    settings = _settings(environment=environment, langfuse_host=CLOUD_LANGFUSE_DEFAULT)
+
+    with pytest.raises(RuntimeError, match="LANGFUSE_HOST"):
+        resolve_langfuse_host_gate(settings)
+
+
+@pytest.mark.parametrize("environment", ["Production", " PRODUCTION "])
+def test_lms_write_target_gate_fires_on_casing_variant_of_production(environment: str) -> None:
+    settings = _settings(
+        environment=environment, frappe_api_url="https://tap-lms-production.example.org"
+    )
+
+    with pytest.raises(RuntimeError, match="FRAPPE_API_URL"):
+        resolve_lms_write_target_gate(settings)
