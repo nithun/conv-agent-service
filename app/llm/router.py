@@ -39,6 +39,13 @@ class ModelRouter:
     ...) to a constructed adapter implementing the shared `Provider`
     interface. `routes` defaults to the module-level `MODEL_ROUTES` config
     but is injectable for tests.
+
+    NAMING NOTE (CR-012 AC-3): `"openrouter"` here names the OpenAI-
+    compatible ADAPTER (`OpenRouterProvider`), not necessarily the vendor
+    actually serving a call. `tap_buddy_turn`'s production configuration
+    points that adapter's `base_url` at the self-hosted LiteLLM gateway,
+    which serves Gemini via Vertex AI — see `build_default_model_router`
+    below and `app/llm/providers/openrouter.py`'s module docstring.
     """
 
     def __init__(
@@ -96,6 +103,12 @@ class ModelRouter:
             latency_s=time.monotonic() - start,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
+            # F-079: forward the provider's actually-served model/cost (when
+            # it detected one) so the trace attributes real Gemini calls
+            # correctly instead of the static route label — see
+            # `app/llm/tracing.py`'s module docstring.
+            served_model=response.served_model,
+            served_cost_usd=response.served_cost_usd,
         )
         return response
 
@@ -105,15 +118,19 @@ def build_default_model_router(
     tracer: Tracer | None = None,
     base_url: str | None = None,
 ) -> ModelRouter:
-    """Convenience constructor wiring the one provider this port ships
-    (OpenRouter, ADR-011's default) — kept separate from `ModelRouter.__init__`
-    so tests can construct a router with fake/mock providers without
-    touching real credentials.
+    """Convenience constructor wiring the one provider ADAPTER this port
+    ships (the OpenAI-compatible `OpenRouterProvider`, ADR-011's default) —
+    kept separate from `ModelRouter.__init__` so tests can construct a
+    router with fake/mock providers without touching real credentials.
 
-    `base_url=None` (the default) targets the real OpenRouter URL. A non-None
-    value (wired from `Settings.openrouter_base_url`, local .env only) points
-    the same OpenAI-compatible adapter at a self-hosted gateway instead —
-    e.g. the compose-local LiteLLM service fronting Vertex AI (F-020).
+    `base_url=None` targets the real OpenRouter cloud URL. A non-None value
+    (wired from `Settings.openrouter_base_url`) points the same adapter at a
+    self-hosted OpenAI-compatible gateway instead — CR-012 (2026-07-28):
+    this is how `tap_buddy_turn` reaches its REAL PRODUCTION transport, the
+    LiteLLM gateway fronting Vertex AI Gemini (`docker-compose.yml`'s
+    `litellm` service in every environment, not a local-only override).
+    Real OpenRouter remains available (empty override) for any route that
+    should NOT go through LiteLLM.
     """
     from app.llm.providers.openrouter import OPENROUTER_BASE_URL, OpenRouterProvider
 

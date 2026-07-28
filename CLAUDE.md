@@ -21,9 +21,20 @@ ADR-010/ADR-011/CR-004 — read before touching `app/`).
 - `httpx` for outbound HTTP (Glific GraphQL, Frappe REST, OpenRouter).
 - `redis` (py client) + `arq` for the queue/worker layer.
 - `guardrails-ai` for deterministic output validators (CR-001 / L-006).
-- `openai` SDK (OpenAI-compatible client) pointed at OpenRouter's base URL
-  for LLM calls — never call a provider SDK directly from business logic;
-  always through `app/llm`'s `ModelRouter` + Langfuse wrapper (L-004).
+- `openai` SDK (OpenAI-compatible client) — never call a provider SDK
+  directly from business logic; always through `app/llm`'s `ModelRouter` +
+  Langfuse wrapper (L-004). The adapter is named/keyed `"openrouter"`
+  (`app/llm/providers/openrouter.py`) and defaults to OpenRouter's real
+  cloud base URL, but its base URL is a runtime setting
+  (`Settings.openrouter_base_url`). **CR-012 (2026-07-28): in this
+  service's actual production configuration, `tap_buddy_turn`'s traffic is
+  pointed at the self-hosted LiteLLM gateway (below), which serves Gemini
+  via Vertex AI — NOT OpenRouter's cloud.** That gateway is the real,
+  documented production LLM transport, not a local-dev-only stopgap; see
+  `app/config/settings.py::openrouter_base_url` and
+  `app/llm/providers/openrouter.py`'s module docstring for the full naming
+  rationale (CR-012 AC-3), and `app/llm/tracing.py` (F-079) for how the
+  Langfuse trace is corrected to record the actually-served model.
 - `langfuse` SDK for tracing every model call (ADR-005).
 
 ### Why `arq`, not `celery`

@@ -92,3 +92,45 @@ def test_end_swallows_sdk_exceptions(tracer: LangfuseTracer) -> None:
 def test_module_still_importable_without_langfuse_package() -> None:
     """The lazy import inside __init__ keeps the module import-safe."""
     assert hasattr(tracing_module, "LangfuseTracer")
+
+
+# -- F-079 (architecture-reviewer ratification of CR-012): trace attributes
+# the ACTUALLY-served model/cost, not the static route label -------------
+
+
+def test_end_overrides_model_when_provider_reports_a_served_model(tracer: LangfuseTracer) -> None:
+    """A LiteLLM-served call must correct the trace's `model` at end() time
+    to the real Gemini model — otherwise Gemini spend is misattributed as
+    Claude in the Langfuse cost/model dashboard (the exact defect F-079
+    flags)."""
+    span = tracer.start_trace(
+        route_name="tap_buddy_turn", provider="openrouter", model="anthropic/claude-sonnet-5"
+    )
+    span.end(
+        latency_s=0.5,
+        input_tokens=8,
+        output_tokens=31,
+        served_model="gemini-2.5-flash",
+        served_cost_usd=0.0001731,
+    )
+
+    end_kwargs = tracer._client.last_generation.end_kwargs
+    assert end_kwargs is not None
+    assert end_kwargs["model"] == "gemini-2.5-flash"
+    assert end_kwargs["metadata"]["served_model"] == "gemini-2.5-flash"
+    assert end_kwargs["metadata"]["served_cost_usd"] == 0.0001731
+
+
+def test_end_leaves_model_unset_when_no_served_model_reported(tracer: LangfuseTracer) -> None:
+    """A real-OpenRouter call (no LiteLLM header detected) must NOT pass
+    `model=` on end() -- the generation keeps the label set at start_trace,
+    which is already correct in that path."""
+    span = tracer.start_trace(
+        route_name="r", provider="openrouter", model="anthropic/claude-sonnet-5"
+    )
+    span.end(latency_s=0.5, input_tokens=8, output_tokens=31)
+
+    end_kwargs = tracer._client.last_generation.end_kwargs
+    assert "model" not in end_kwargs
+    assert "served_model" not in end_kwargs["metadata"]
+    assert "served_cost_usd" not in end_kwargs["metadata"]

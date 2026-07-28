@@ -70,14 +70,40 @@ class Settings(BaseSettings):
 
     # --- LLM / observability (populated once secrets exist, WBS 0.3/0.4) ---
     openrouter_api_key: str = ""
-    # Optional override for the OpenAI-compatible endpoint the default
-    # provider adapter targets. Empty (the default) = the real OpenRouter
-    # URL (the adapter's own constant). Set ONLY in a local .env to point at
-    # a self-hosted OpenAI-compatible gateway — e.g. the LiteLLM service in
-    # docker-compose.yml fronting Vertex AI (F-020 local live-verification,
-    # ADR-011's pluggable-backend intent). Same opt-in discipline as
-    # GLIFIC_HOST_HEADER_OVERRIDE: never a baked non-empty default, never
-    # set in staging/prod config.
+    # Override for the OpenAI-compatible endpoint the default provider
+    # adapter (`app/llm/providers/openrouter.py::OpenRouterProvider`)
+    # targets. Empty = the real OpenRouter cloud URL (the adapter's own
+    # constant) — still available for any route that should NOT go through
+    # LiteLLM. Non-empty points the SAME adapter at a self-hosted
+    # OpenAI-compatible gateway instead.
+    #
+    # CR-012 (2026-07-28): for `tap_buddy_turn`, that gateway — LiteLLM
+    # fronting Vertex AI, `docker-compose.yml`'s `litellm` service — IS THE
+    # REAL, DOCUMENTED PRODUCTION TRANSPORT, serving Gemini
+    # `gemini-2.5-flash` (project `tap-buddy-mvp`). This is set in EVERY
+    # environment's config (local `.env` and the AD-004 GCP VM deployment
+    # alike), not a local-dev-only convenience — the earlier "never set in
+    # staging/prod" framing here was superseded by CR-012 (reversing the
+    # CR's original 2026-07-27 native-`vertex.py`-adapter proposal: building
+    # a second, parallel native egress to the same model was avoidable
+    # work). Still opt-in per-environment like every other field here (no
+    # baked non-empty default) — but "opt-in" no longer means "dev-only".
+    #
+    # NAMING NOTE (CR-012 AC-3, F-076): this field's name and the adapter's
+    # `"openrouter"` provider key are legacy from when OpenRouter's own
+    # cloud was the only target. They now mean "the OpenAI-compatible
+    # adapter, pointed at whichever OpenAI-compatible endpoint
+    # `openrouter_base_url` names" — which, in this service's real
+    # production configuration, is the LiteLLM->Vertex/Gemini gateway, NOT
+    # OpenRouter's cloud. A rename (field, provider key, both env vars, the
+    # adapter class, every referencing test) was judged too large a blast
+    # radius for a labelling-honesty fix (CR-012's revised scope is
+    # doc/config-honesty, not a rewrite) — this comment, plus matching ones
+    # at `app/llm/routes.py`, `app/llm/router.py`, and
+    # `app/llm/providers/openrouter.py`, is the chosen alternative. The
+    # Langfuse TRACE itself is corrected independently (F-079,
+    # `app/llm/tracing.py`) to record the actually-served model, so
+    # mislabeling here does not propagate into cost/model dashboards.
     openrouter_base_url: str = ""
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""

@@ -142,19 +142,40 @@ services:
       LANGFUSE_INIT_USER_NAME: Nithun
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set in .env}
 
-  # Self-hosted LiteLLM proxy (open source) — local dev AND the AD-004 GCP
-  # VM deployment (the "LOCAL DEV ONLY (F-020)" scoping was falsified by
-  # AD-004, corrected 2026-07-22 per F-046(b)/L-013). An
-  # OpenAI-compatible gateway fronting Vertex AI with the operator's
-  # existing GCP service account, so a REAL model call can run + be traced
-  # without an OpenRouter account. The app opts in via .env:
-  #   OPENROUTER_BASE_URL=http://litellm:4000  (empty = real OpenRouter)
+  # Self-hosted LiteLLM proxy (open source) — CR-012 (2026-07-28): this is
+  # the REAL, DOCUMENTED PRODUCTION LLM transport for `tap_buddy_turn`, in
+  # both local dev and the AD-004 GCP VM deployment — not a "local dev
+  # only" stopgap (that framing was already falsified by AD-004 and
+  # corrected 2026-07-22 per F-046(b)/L-013; CR-012 makes the promotion
+  # explicit and removes every remaining stopgap/dev-only label in this
+  # repo). An OpenAI-compatible gateway fronting Vertex AI with the
+  # operator's `tap-buddy-mvp` GCP service account, serving
+  # `vertex_ai/gemini-2.5-flash` (see litellm.config.yaml's model aliasing,
+  # AC-2). The app opts in via .env — this IS the intended production
+  # configuration, not an undocumented override:
+  #   OPENROUTER_BASE_URL=http://litellm:4000  (empty = real OpenRouter cloud)
   #   OPENROUTER_API_KEY=<LITELLM_MASTER_KEY value>  (client auth to the proxy)
+  # ("openrouter" here names the OpenAI-compatible ADAPTER, not the vendor
+  # actually serving the call — see app/config/settings.py's
+  # openrouter_base_url docstring and app/llm/providers/openrouter.py's
+  # module docstring, CR-012 AC-3.)
   # GCP key is mounted read-only from the host path in .env — the file
   # never enters an image or this repo. Model aliasing: litellm.config.yaml.
   # Host port 4001 is for humans/debugging only (4000 on the host is Glific).
+  #
+  # F-078 (architecture-reviewer ratification of CR-012, 2026-07-28): this
+  # is now a child-facing critical-path service with no `FallbackRoute`
+  # dispatch behind it (CR-012 explicitly drops that wiring) — a `litellm`
+  # outage fails every turn. `restart: unless-stopped` recovers it after a
+  # crash/host reboot; the healthcheck (LiteLLM's own unauthenticated
+  # `/health/liveliness` probe — `/health` needs the master key and does a
+  # deeper per-model check, deliberately not used here) lets
+  # `docker compose ps` / a future orchestrator surface an unhealthy proxy
+  # instead of silently accepting connections that will fail. No `curl`/
+  # `wget` in this image (grep-verified 2026-07-28), hence the python3 CMD.
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro
       - ${GCP_SA_KEY_PATH:?set in .env}:/secrets/gcp-sa.json:ro
@@ -164,6 +185,16 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
       - "4001:4000"
+    healthcheck:
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3).status == 200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   langfuse-db-data:

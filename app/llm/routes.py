@@ -6,6 +6,18 @@ literal outside this module), `selected_by` (required IFF `provider !=
 "openrouter"` — a path to a dated benchmark artifact under
 `docs/benchmarks/`), and an optional `fallback` `{provider, model}` pair.
 
+NAMING NOTE (CR-012 AC-3, F-076): `provider="openrouter"` names the
+OpenAI-compatible ADAPTER (`app/llm/providers/openrouter.py`), not
+necessarily OpenRouter's own cloud. In this service's actual production
+configuration, `tap_buddy_turn`'s `provider="openrouter"` entry is served
+through the self-hosted LiteLLM gateway (`Settings.openrouter_base_url`),
+which routes to Vertex AI `gemini-2.5-flash` — see
+`app/config/settings.py::openrouter_base_url` and
+`app/llm/providers/openrouter.py`'s module docstring for the full picture,
+and `app/llm/tracing.py` (F-079) for how the Langfuse trace is corrected to
+show the real served model rather than the `"anthropic/claude-sonnet-5"`
+label below.
+
 This CR (CR-004) does not choose a non-default provider for any route —
 every entry below defaults to `"openrouter"`. `tap_buddy_turn` is the first
 route, ported from tap-buddy's single-Vertex-client main turn loop

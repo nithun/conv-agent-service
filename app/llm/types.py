@@ -60,3 +60,23 @@ class ModelResponse:
     input_tokens: int | None = None
     output_tokens: int | None = None
     raw: Any = None
+    # F-079 (architecture-reviewer ratification of CR-012): the model that
+    # actually served this call, when a provider can detect it differs from
+    # the configured `RouteConfig.model` label. `None` means "trust
+    # route.model" (the common case — a direct OpenRouter call, or any
+    # provider with no such detection). Populated by
+    # `OpenRouterProvider.generate` when the OpenAI-compatible endpoint is
+    # actually the LiteLLM gateway (CR-012): LiteLLM echoes the REQUESTED
+    # alias back in the response body's `model` field, so the real served
+    # model (e.g. `gemini-2.5-flash`) only appears in a response header —
+    # `ModelRouter` forwards this into the Langfuse trace so cost/model
+    # dashboards attribute the real Gemini call, not the Claude-shaped
+    # route label.
+    served_model: str | None = None
+    # The real per-call cost LiteLLM computed for the ACTUAL served model
+    # (its `x-litellm-response-cost` response header, USD) — `None` when
+    # unavailable (real OpenRouter never sends this header). Surfaced as
+    # Langfuse trace metadata only (F-079); not fed into Langfuse's own
+    # cost_details calculation, whose schema is unverified for this SDK/
+    # server pin (L-009 — no guessing a vendor payload shape untested).
+    served_cost_usd: float | None = None

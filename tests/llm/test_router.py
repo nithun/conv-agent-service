@@ -136,6 +136,45 @@ async def test_trace_recorded_with_error_flag_on_provider_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_forwards_served_model_and_cost_to_the_trace() -> None:
+    """F-079 (architecture-reviewer ratification of CR-012): when a provider
+    reports the call was actually served by a different model than the
+    static route label (the LiteLLM->Vertex/Gemini case), ModelRouter must
+    forward that onto the trace, not silently drop it.
+    """
+    tracer = RecordingTracer()
+    provider = FakeProvider(
+        "openrouter",
+        ModelResponse(
+            text="Pong.",
+            input_tokens=8,
+            output_tokens=31,
+            served_model="gemini-2.5-flash",
+            served_cost_usd=0.0001731,
+        ),
+    )
+    router = ModelRouter(providers={"openrouter": provider}, routes=ROUTES, tracer=tracer)
+
+    await router.generate("test_route", [])
+
+    assert len(tracer.calls) == 1
+    assert tracer.calls[0].served_model == "gemini-2.5-flash"
+    assert tracer.calls[0].served_cost_usd == pytest.approx(0.0001731)
+
+
+@pytest.mark.asyncio
+async def test_generate_leaves_served_model_none_when_provider_reports_none() -> None:
+    tracer = RecordingTracer()
+    provider = FakeProvider("openrouter")  # default ModelResponse has served_model=None
+    router = ModelRouter(providers={"openrouter": provider}, routes=ROUTES, tracer=tracer)
+
+    await router.generate("test_route", [])
+
+    assert tracer.calls[0].served_model is None
+    assert tracer.calls[0].served_cost_usd is None
+
+
+@pytest.mark.asyncio
 async def test_tool_calls_pass_through_response() -> None:
     provider = FakeProvider(
         "openrouter",
@@ -150,13 +189,14 @@ async def test_tool_calls_pass_through_response() -> None:
     assert tools_passed == [{"name": "get_next_content"}]
 
 
-# -- build_default_model_router base_url wiring (F-020 local gateway) -----
+# -- build_default_model_router base_url wiring (CR-012: LiteLLM gateway --
+# is the real production transport, not a local-only override) -----------
 
 
 def test_build_default_router_targets_real_openrouter_by_default() -> None:
     """base_url=None (and settings.openrouter_base_url empty -> None at the
     call sites) must target the real OpenRouter URL — guards against the
-    local-gateway override silently becoming the default (same discipline
+    LiteLLM-gateway override silently becoming the default (same discipline
     as GLIFIC_HOST_HEADER_OVERRIDE's absent-by-default test).
     """
     from app.llm.router import build_default_model_router
@@ -168,9 +208,11 @@ def test_build_default_router_targets_real_openrouter_by_default() -> None:
 
 
 def test_build_default_router_base_url_override_reaches_the_client() -> None:
-    """A non-None base_url (wired from Settings.openrouter_base_url, local
-    .env only) must actually reach the OpenAI-compatible client — this is
-    what points the adapter at the compose-local LiteLLM gateway (F-020).
+    """A non-None base_url (wired from Settings.openrouter_base_url) must
+    actually reach the OpenAI-compatible client — this is what points the
+    adapter at the LiteLLM gateway (CR-012: the real production transport
+    for `tap_buddy_turn`, serving Gemini via Vertex AI, in every
+    environment, not just local dev).
     """
     from app.llm.router import build_default_model_router
     from app.llm.tracing import NullTracer

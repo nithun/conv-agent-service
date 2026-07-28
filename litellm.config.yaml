@@ -1,18 +1,31 @@
-# LiteLLM proxy config — LOCAL DEV ONLY (compose service `litellm`).
+# LiteLLM proxy config (compose service `litellm`) — CR-012 (2026-07-28):
+# this is the REAL, DOCUMENTED PRODUCTION LLM transport for
+# `tap_buddy_turn`, in local dev AND the AD-004 GCP VM deployment. NOT a
+# "local dev only" stopgap and NOT a substitute for a claim of model
+# equivalence to some other "real" path — Gemini via LiteLLM->Vertex IS the
+# real path Nithun chose (CR-012, reversing the CR's original 2026-07-27
+# native-`vertex.py`-adapter proposal): building a second, parallel native
+# egress to the same model was avoidable work.
 #
-# Purpose (F-020): give the default OpenAI-compatible provider adapter a
-# self-hosted, open-source gateway to call, fronting Vertex AI with the
-# operator's existing GCP credentials (project tap-buddy-mvp, ADR-011's
-# pluggable-backend intent) — so a REAL model call can be made and traced
-# locally without an OpenRouter account/key.
+# Serves the default OpenAI-compatible provider adapter
+# (`app/llm/providers/openrouter.py`) a self-hosted, open-source gateway
+# fronting Vertex AI with the operator's `tap-buddy-mvp` GCP service
+# account credentials (ADR-011's pluggable-backend intent) — so a REAL
+# model call can be made and Langfuse-traced without an OpenRouter
+# account/key, in every environment this repo runs in.
 #
 # The entries below are ALIASES: they map MODEL_ROUTES' existing model ids
-# (app/llm/routes.py — untouched) onto Vertex Gemini models. This is a
-# local-dev serving substitution for live verification, NOT a claim that
-# the aliased models are equivalent — staging/prod still means real
-# OpenRouter (or an ADR-011 benchmark-gated provider change). The Langfuse
-# trace records the route's model id; LiteLLM's own logs show what actually
-# served it.
+# (app/llm/routes.py — untouched; the "anthropic/claude-*" model strings
+# are ROUTE LABELS, not a claim that a Claude model is actually served) onto
+# Vertex Gemini models. `tap_buddy_turn` (the only route with a real call
+# site) is confirmed served on `vertex_ai/gemini-2.5-flash`, project
+# `tap-buddy-mvp`, region `us-central1` — CR-012 Open Q#1, confirmed by
+# Nithun 2026-07-28. The Langfuse trace's `model` field is corrected at
+# call-end to the actually-served model (F-079,
+# `app/llm/providers/openrouter.py::_extract_litellm_served_model` +
+# `app/llm/tracing.py`'s `LangfuseTracer._end`) — it no longer just shows
+# the route's static Claude-shaped label. LiteLLM's own logs/response
+# headers are still the ground truth for exactly what served a given call.
 #
 # Auth: clients present LITELLM_MASTER_KEY (in .env) as their bearer key —
 # the same value the app reads as OPENROUTER_API_KEY when
@@ -22,7 +35,7 @@
 model_list:
   - model_name: anthropic/claude-sonnet-5 # tap_buddy_turn (the live route)
     litellm_params:
-      model: vertex_ai/gemini-2.5-flash # tap-buddy's proven model (VERTEX_MODEL default)
+      model: vertex_ai/gemini-2.5-flash # confirmed Gemini tier (CR-012 Open Q#1)
       vertex_project: tap-buddy-mvp
       vertex_location: us-central1
   - model_name: anthropic/claude-haiku-4.5 # intent_classification (no call site yet)
