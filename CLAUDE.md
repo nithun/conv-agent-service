@@ -101,13 +101,29 @@ staging/prod artifact) serves both.
 
 ```bash
 cp .env.example .env        # first time only; fill in secrets as they exist
-docker compose up --build   # boots app (HOST PORT 8001) + worker + Redis (6379)
-                            # + self-hosted Langfuse (dashboard :3001) +
-                            # LiteLLM gateway (:4001) — see .env.example
+docker compose up --build   # boots app (HOST PORT 8001, public) + worker +
+                            # Redis (127.0.0.1:6379) + self-hosted Langfuse
+                            # (dashboard 127.0.0.1:3001) + LiteLLM gateway
+                            # (127.0.0.1:4001) — see .env.example
 curl http://localhost:8001/health
 docker compose ps           # confirm app, worker, redis, langfuse, litellm all Up
 docker compose down         # tear down when finished
 ```
+
+**Internal service ports are loopback-only, by a tracked override (F-044 /
+ADR-012 BC-2).** `docker-compose.yml` publishes no host port at all for
+`redis`/`langfuse`/`litellm` — app and worker reach them over the compose
+network by service name. The tracked `docker-compose.override.yml` (loaded
+automatically alongside `docker-compose.yml`, no extra `-f` flag needed) is
+the sole source of any host publish for those three services, and binds
+each to `127.0.0.1` only — reachable from the host/VM loopback for
+debugging, never from another machine (this closes the gap where an
+untracked one-off file on the VM was the only thing preventing an
+unauthenticated Redis, a master-keyed LiteLLM, and PII-bearing Langfuse
+traces from being reachable by every co-tenant VM on the shared GCP `default`
+network). The `app` service's port (8001) is deliberately untouched — it is
+the public Glific webhook target. `tests/config/test_internal_ports_loopback_only.py`
+mechanically enforces this: it fails if either file drifts from this shape.
 
 **`worker` is not optional.** `app` (the FastAPI ingress) only fast-acks the
 Glific webhook and enqueues the turn onto its per-contact Redis Stream

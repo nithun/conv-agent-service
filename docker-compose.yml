@@ -80,8 +80,14 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # No host port published HERE on purpose (F-044 / ADR-012 BC-2): app and
+    # worker reach this over the compose network by service name
+    # (REDIS_URL=redis://redis:6379), so a host publish is only for a
+    # human's own debugging convenience. `docker-compose.override.yml`
+    # (tracked, loopback-only) is the SOLE source of any host publish for
+    # this service — publishing nothing here means a deploy that somehow
+    # runs without the override fails CLOSED (unreachable from the host)
+    # instead of failing open on 0.0.0.0, which is what BC-2 found.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -95,7 +101,9 @@ services:
   # own Postgres; it runs beside app/worker on the compose network. The SDK
   # in app/worker reaches it by service name: LANGFUSE_HOST=http://langfuse:3000
   # (set in .env). Dashboard published on host port 3001 (3000 is occupied
-  # on this machine); NEXTAUTH_URL must match the browser-facing URL.
+  # on this machine), loopback-only via docker-compose.override.yml (F-044 /
+  # ADR-012 BC-2 — see this service's `ports:` comment below); NEXTAUTH_URL
+  # must match the browser-facing URL.
   # Secrets (LANGFUSE_DB_PASSWORD / _NEXTAUTH_SECRET / _SALT) are
   # compose-interpolated from .env — local-only, gitignored, never defaults.
   langfuse-db:
@@ -120,8 +128,11 @@ services:
     depends_on:
       langfuse-db:
         condition: service_healthy
-    ports:
-      - "3001:3000"
+    # No host port published HERE on purpose (F-044 / ADR-012 BC-2): app and
+    # worker reach this over the compose network (LANGFUSE_HOST=http://langfuse:3000).
+    # `docker-compose.override.yml` (tracked, loopback-only) is the SOLE
+    # source of any host publish — see the redis service's comment above for
+    # why (fail-closed-by-default instead of fail-open-on-0.0.0.0).
     environment:
       DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:?set in .env}@langfuse-db:5432/langfuse
       NEXTAUTH_URL: http://localhost:3001
@@ -161,7 +172,9 @@ services:
   # module docstring, CR-012 AC-3.)
   # GCP key is mounted read-only from the host path in .env — the file
   # never enters an image or this repo. Model aliasing: litellm.config.yaml.
-  # Host port 4001 is for humans/debugging only (4000 on the host is Glific).
+  # Host port 4001 (4000 on the host is Glific) is for humans/debugging
+  # only, and is published loopback-only via docker-compose.override.yml
+  # (F-044 / ADR-012 BC-2) — see this service's `ports:` comment below.
   #
   # F-078 (architecture-reviewer ratification of CR-012, 2026-07-28): this
   # is now a child-facing critical-path service with no `FallbackRoute`
@@ -183,8 +196,13 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcp-sa.json
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?set in .env}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
-    ports:
-      - "4001:4000"
+    # No host port published HERE on purpose (F-044 / ADR-012 BC-2): app and
+    # worker reach this over the compose network (OPENROUTER_BASE_URL=http://litellm:4000).
+    # `docker-compose.override.yml` (tracked, loopback-only) is the SOLE
+    # source of any host publish — see the redis service's comment above for
+    # why (fail-closed-by-default instead of fail-open-on-0.0.0.0). This is
+    # doubly important here: LITELLM_MASTER_KEY is the credential guarding a
+    # billed Vertex AI proxy (F-078 makes it critical-path, no fallback).
     healthcheck:
       test:
         - "CMD"

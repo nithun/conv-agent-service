@@ -1,0 +1,37 @@
+# F-044 / ADR-012 BC-2: versioned loopback-binding for every internal
+# service `docker-compose.yml` publishes. `docker compose` auto-loads this
+# file alongside `docker-compose.yml` with no extra `-f` flag (Compose's
+# documented override convention), so `docker compose up` is safe by
+# default — no separate "remember to pass the override" step to forget on a
+# redeploy.
+#
+# Rebinds Redis (6379), Langfuse (3001->3000), and LiteLLM (4001->4000) to
+# 127.0.0.1 ONLY. These are internal services with no auth (Redis) or with
+# secrets/PII behind them (LiteLLM's master key, Langfuse's prompt/response
+# traces, L-007) — they must be reachable from the VM's own loopback (where
+# `app`/`worker` and a human operator's SSH session run) but NEVER from
+# another machine, including the ~35 co-tenant VMs on the shared `default`
+# GCP VPC that ADR-012 BC-1 documents as otherwise reachable
+# (`default-allow-internal` permits every port from that range; BC-1 is the
+# firewall-side fix, out of this repo's scope — this file is the other half
+# of BC-2, the versioned artifact BC-2 found missing).
+#
+# Deliberately does NOT touch the `app` service's published port (8001).
+# That is the public Glific webhook target (fronted by Caddy/TLS on the
+# VM), and must stay reachable from outside the loopback — narrowing it
+# here would break the one thing this service exists to receive.
+#
+# BC-2 close condition: "a config test asserts every non-Caddy published
+# port binds to 127.0.0.1" — see tests/config/test_internal_ports_loopback_only.py.
+services:
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  langfuse:
+    ports:
+      - "127.0.0.1:3001:3000"
+
+  litellm:
+    ports:
+      - "127.0.0.1:4001:4000"
