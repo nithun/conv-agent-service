@@ -1,0 +1,60 @@
+# VM deployment overlay (AD-004 / F-044). Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d
+#
+# NOTE: with explicit `-f` flags, docker-compose.override.yml is NOT
+# auto-loaded, so this file must fully specify the loopback port bindings for
+# the internal services (it does, below). The base docker-compose.yml no longer
+# publishes redis/langfuse/litellm at all (F-044 / 8e236a2) — `!override` here
+# is the sole publish source for them on the VM, all pinned to 127.0.0.1.
+#
+# Differences from local dev:
+#  - Caddy terminates TLS on 80/443 and is the ONLY publicly-bound service.
+#  - Every other published port is re-bound to 127.0.0.1 (!override), so
+#    Redis/Langfuse/LiteLLM are unreachable from the internet even if a VPC
+#    firewall rule is later widened. Defense in depth: the GCP VPC firewall
+#    (tap-agent-allow-web: 22/80/443 only, + tap-agent-deny-all-else) is the
+#    outer control, this loopback binding is the inner one (ADR-012 BC-1/BC-2).
+#  - restart: unless-stopped everywhere, so the stack survives a VM reboot.
+services:
+  app:
+    ports: !override
+      - "127.0.0.1:8001:8000"
+    restart: unless-stopped
+
+  worker:
+    restart: unless-stopped
+
+  redis:
+    ports: !override
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+  langfuse:
+    ports: !override
+      - "127.0.0.1:3001:3000"
+    restart: unless-stopped
+
+  langfuse-db:
+    restart: unless-stopped
+
+  litellm:
+    ports: !override
+      - "127.0.0.1:4001:4000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy-data:
+  caddy-config:

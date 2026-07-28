@@ -1,0 +1,43 @@
+# TLS terminator for tap-agent-service (AD-004 / F-044 / F-066).
+#
+# Only two surfaces are public; everything else is 404. The webhook stays
+# CLOSED (503) until CR-009's X-Glific-Signature enforce-mode is verified live
+# on the VM (go-live runbook Step 3) — the 503 handler is removed as the FINAL
+# go-live action, never before.
+#
+# Hostnames (F-066): during the migration off the IP-encoding sslip.io name,
+# BOTH hostnames are served — each gets its own Let's Encrypt cert via ACME
+# HTTP-01 (port 80 open, DNS already points conv.evalix.xyz -> the VM's static
+# IP tap-agent-vm-ip/136.112.168.248) and serves the identical route allowlist.
+# Once conv.evalix.xyz is verified serving + Glific's webhook is re-pointed,
+# drop the sslip.io name from this line (its BC-5 risk is already mitigated by
+# the static IP, but the clean end state is conv.evalix.xyz only).
+136.112.168.248.sslip.io, conv.evalix.xyz {
+	encode gzip
+
+	# CR-007 contract: the delivering BSP fetches TTS audio anonymously.
+	# Safe to expose: tokens are unguessable uuid4 + the route has
+	# path-traversal defenses (app/ingress/media.py). Upstream is the app
+	# container's port 8000 over the compose network (NOT the 8001 host
+	# publish — that is loopback-only per docker-compose.vm.yml).
+	handle /media/* {
+		reverse_proxy app:8000
+	}
+
+	handle /health {
+		reverse_proxy app:8000
+	}
+
+	# Live Glific POSTs turns here. 503 until CR-009 enforce-mode is verified
+	# live (runbook Step 3): an unauthenticated public webhook lets anyone
+	# impersonate any child's contact_id, drive real LLM spend, and send real
+	# WhatsApp messages. Replace this handler with `reverse_proxy app:8000`
+	# as the LAST go-live action, after the signed/unsigned/replay matrix passes.
+	handle /webhook/glific* {
+		respond "webhook authentication not yet deployed (CR-009)" 503
+	}
+
+	handle {
+		respond "not found" 404
+	}
+}
