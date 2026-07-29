@@ -2,13 +2,15 @@
 `tap-buddy/src/tap_buddy/clients/lms_mock.py`. Implements the same
 method surface as `TapLmsClient` (duck-typed, not a subclass, to keep the
 real client free of test-only branching) — including CR-011/ADR-013's
-`register_test_student`/`reset_test_student` (tasks 6/7, added 2026-07-27).
+`register_test_student`/`reset_test_student` (tasks 6/7, added 2026-07-27)
+and CR-013/ADR-014's `get_test_student_by_phone` (added 2026-07-29).
 """
 
 from __future__ import annotations
 
 from app.tools.lms_client import (
     ContentReference,
+    PhoneLookupResult,
     QuizQuestionDetails,
     QuizStartResult,
     RegisterTestStudentResult,
@@ -68,7 +70,7 @@ DEFAULT_FIXTURE_QUIZ_QUESTIONS: dict[str, QuizQuestionDetails] = {
 
 
 class MockTapLmsClient:
-    """Fixture-backed stand-in for TapLmsClient. All 5 methods async to match
+    """Fixture-backed stand-in for TapLmsClient. All methods async to match
     the real client's interface.
     """
 
@@ -77,11 +79,22 @@ class MockTapLmsClient:
         students: dict[str, list[StudentCandidate]] | None = None,
         content: dict[str, ContentReference] | None = None,
         quiz_questions: dict[str, QuizQuestionDetails] | None = None,
+        test_batch_students: dict[str, list[StudentCandidate]] | None = None,
     ):
         self.students = students if students is not None else dict(DEFAULT_FIXTURE_STUDENTS)
         self.content = content if content is not None else dict(DEFAULT_FIXTURE_CONTENT)
         self.quiz_questions = (
             quiz_questions if quiz_questions is not None else dict(DEFAULT_FIXTURE_QUIZ_QUESTIONS)
+        )
+        # CR-013/ADR-014 Ask A: a DELIBERATELY SEPARATE fixture dict from
+        # `self.students` above — the real `get_test_student_by_phone`
+        # endpoint is a different, batch-scoped query, not a phone-only
+        # projection of `get_student_by_phone_and_name`'s candidate pool.
+        # Defaults to EMPTY (never DEFAULT_FIXTURE_STUDENTS) so every
+        # existing by-name test's zero-match/ask-name behavior is preserved
+        # unless a test opts in explicitly.
+        self.test_batch_students = (
+            test_batch_students if test_batch_students is not None else {}
         )
         self.submissions: list[dict[str, str]] = []
         self.quiz_starts: list[dict[str, str]] = []
@@ -90,6 +103,10 @@ class MockTapLmsClient:
         self.reset_test_student_calls: list[dict[str, object]] = []
         self._registered_test_students: dict[tuple[str, str], str] = {}
         self._next_test_student_seq = 1
+        # CR-013/ADR-014 Ask A: records every phone probed, for the
+        # regression test proving an EXISTING session never re-triggers
+        # this lookup.
+        self.test_student_by_phone_calls: list[str] = []
 
     async def aclose(self) -> None:
         return None
@@ -197,4 +214,18 @@ class MockTapLmsClient:
         )
         return ResetTestStudentResult(
             success=True, student_id=student_id, submissions_deleted=0, pe_reset=True
+        )
+
+    async def get_test_student_by_phone(self, phone: str) -> PhoneLookupResult:
+        """CR-013/ADR-014 Ask A fixture. Reads `self.test_batch_students`
+        (a SEPARATE fixture dict from `self.students` — see `__init__`),
+        most-recent-first ordering assumed already correct in whatever list
+        a test provides (this fixture does not re-sort).
+        """
+        self.test_student_by_phone_calls.append(phone)
+        candidates = self.test_batch_students.get(phone, [])
+        return PhoneLookupResult(
+            success=True,
+            matched_student_count=len(candidates),
+            students=list(candidates),
         )

@@ -1,16 +1,20 @@
 """TAP LMS (Frappe) client — the COMPLETE LMS integration surface.
 
 Ported from `tap-buddy/src/tap_buddy/clients/lms_client.py` (CR-004 Task
-12). 7 whitelisted endpoints (`start_quiz` added 2026-07-17 under F-028,
+12). 8 whitelisted endpoints (`start_quiz` added 2026-07-17 under F-028,
 permanently registered via CR-031/D-8; `register_test_student`/
-`reset_test_student` added 2026-07-27 under CR-011/ADR-013, tasks 6/7). No
-other method exists on this client, and none should ever be added without a
-corresponding PRD/CR — `save_submission`, `register_test_student`, and
-`reset_test_student` are the three unconditional write paths (state
-authority, L-001 — all three are existing/newly-whitelisted Frappe
-endpoints, never an agent-invented state); `start_quiz` creates/resumes a
-quiz attempt (deterministic, once-per-quiz, resume-idempotent — see its
-docstring).
+`reset_test_student` added 2026-07-27 under CR-011/ADR-013, tasks 6/7;
+`get_test_student_by_phone` added 2026-07-29 under CR-013/ADR-014, the J2
+returning-by-phone wire-up). No other method exists on this client, and none
+should ever be added without a corresponding PRD/CR — `save_submission`,
+`register_test_student`, and `reset_test_student` are the three
+unconditional write paths (state authority, L-001 — all three are
+existing/newly-whitelisted Frappe endpoints, never an agent-invented state);
+`start_quiz` creates/resumes a quiz attempt (deterministic, once-per-quiz,
+resume-idempotent — see its docstring); `get_test_student_by_phone` is a
+pure read, scoped SERVER-SIDE to the dedicated test batch `BT00000025`
+(ADR-014 BC-B — this client does no batch filtering itself, it trusts the
+LMS's own scoping).
 
 Live-verified dotted paths (tap-buddy/CLAUDE.md, 2026-07-03, against
 lms.evalix.xyz with a real API key — re-verification against THIS stack is
@@ -41,6 +45,22 @@ assumption):
     {...}}` envelope.
   Both use the SAME `Authorization: token <key>:<secret>` header the other
   5 methods already send via `frappe_token` — no new credential.
+
+CR-013/ADR-014 (2026-07-29, HANDOVER-tap-agent-2026-07-29-cr013-returning-and-language-REPLY.md,
+Ask A — deployed + live-verified on lms.evalix.xyz same day):
+  - get_test_student_by_phone -> tap_lms.summer_program.cr011_test_flow.get_test_student_by_phone
+    Read-only, SAME `Authorization: token` credential, scoped SERVER-SIDE to
+    test batch `BT00000025` (real non-test enrollments are ignored —
+    ADR-014 BC-B). Payload `{"phone": ...}` (10-digit or 91-prefixed both
+    accepted). Response envelope is the standard Frappe `{"message": {...}}`
+    shape: `{status_code, success, phone, matched_student_count, students}`
+    — `students` is a list, MOST-RECENT-FIRST by `last_activity`, each
+    `{student_id, name1, phone, language, status, grade, pe_name, batch,
+    last_activity}`. `language` is `null` after a `reset_test_student`
+    reset (CR-013 decision 4) — the caller's existing GAP-0 check handles a
+    falsy `tap_language` unchanged. Deployed on tap-lms-frappe's
+    server-local branch `returning-user-language-field` @ `e22ba91` (not
+    yet pushed to GitHub, held checked out for the test window).
 """
 
 from __future__ import annotations
@@ -58,6 +78,10 @@ START_QUIZ_METHOD = "tap_lms.summer_program.student_progression_sp.start_quiz"
 # CR-011/ADR-013 tasks 6/7 (2026-07-27 CONTRACT UPDATE, F-071 reply).
 REGISTER_TEST_STUDENT_METHOD = "tap_lms.summer_program.cr011_test_flow.register_test_student"
 RESET_TEST_STUDENT_METHOD = "tap_lms.summer_program.cr011_test_flow.reset_test_student"
+# CR-013/ADR-014 Ask A (2026-07-29 CONTRACT, deployed + live-verified).
+GET_TEST_STUDENT_BY_PHONE_METHOD = (
+    "tap_lms.summer_program.cr011_test_flow.get_test_student_by_phone"
+)
 
 
 class LmsApiError(Exception):
@@ -150,6 +174,22 @@ class ResetTestStudentResult:
     pe_reset: bool = False
 
 
+@dataclass
+class PhoneLookupResult:
+    """CR-013 Ask A (ADR-014 BC-B) — phone-only returning-tester lookup,
+    scoped SERVER-SIDE to the dedicated test batch `BT00000025` (never a
+    general-population query). `students` is MOST-RECENT-FIRST by
+    `last_activity` (the LMS's own ordering) — `students[0]` is "last
+    interacted". The caller (`app/core/identity.py`) decides the
+    zero/one/many branching; this client never does.
+    """
+
+    success: bool
+    matched_student_count: int
+    students: list[StudentCandidate]
+    error: str | None = None
+
+
 _ANSWER_LEAK_KEY_PREFIX = "correct_option"
 
 
@@ -187,14 +227,16 @@ class QuizStartResult:
 
 
 class TapLmsClient:
-    """The complete TAP LMS integration surface — exactly 7 methods. Do not
-    add an 8th without a PRD/CR. (The 5th, `start_quiz`, was added
+    """The complete TAP LMS integration surface — exactly 8 methods. Do not
+    add a 9th without a PRD/CR. (The 5th, `start_quiz`, was added
     2026-07-17 under F-028 — nithun-directed design; registration made
     PERMANENT by CR-031's approval, decision D-8,
     [[HANDOVER-TAP-AGENT-2026-07-17]]. The 6th/7th, `register_test_student`/
     `reset_test_student`, were added 2026-07-27 under CR-011/ADR-013 tasks
     6/7 — both existing, already-live-verified Frappe endpoints, registered
-    in AD-002's external-contracts table as VERIFIED rows, F-071 reply.)
+    in AD-002's external-contracts table as VERIFIED rows, F-071 reply. The
+    8th, `get_test_student_by_phone`, was added 2026-07-29 under CR-013/
+    ADR-014 — the J2 returning-by-phone wire-up.)
     """
 
     def __init__(
@@ -427,4 +469,65 @@ class TapLmsClient:
             student_id=str(message.get("student_id") or student_id),
             submissions_deleted=int(message.get("submissions_deleted") or 0),
             pe_reset=bool(message.get("pe_reset", False)),
+        )
+
+    async def get_test_student_by_phone(self, phone: str) -> PhoneLookupResult:
+        """CR-013 Ask A / ADR-014 BC-B — the J2 returning-by-phone lookup.
+
+        Read-only, scoped SERVER-SIDE to test batch `BT00000025` (this
+        client trusts the LMS's own scoping; it does no filtering here).
+        Called at session start, BEFORE ever asking the child's name
+        (`app/worker/turn_processor.py`'s `session is None` branch, via
+        `app/core/identity.py::resolve_returning_identity_by_phone`).
+
+        Response envelope: standard Frappe `{"message": {...}}` — read
+        `response["message"]`, NOT `get_next_content`'s flat
+        `@glific_response` shape. `students` is most-recent-first by
+        `last_activity`; each entry's `name1`/`language` map onto
+        `StudentCandidate.child_name`/`tap_language` (the SAME shape
+        `get_student_by_phone_and_name` already produces, so
+        `identity.py`'s `_identity_from_candidate` and the multi-candidate
+        disambiguation seam work unchanged). `language` comes back `null`
+        for a student whose `TESTAIRESET` reset already cleared it
+        (CR-013 decision 4) — the caller's existing GAP-0 falsy check
+        handles that unchanged.
+
+        Raises `LmsApiError` on a non-2xx/non-JSON response or an
+        unrecognized envelope — the caller (`turn_processor.py`) MUST catch
+        this and fall back to today's ask-name path (L-005 failure honesty:
+        never silently treat a lookup failure as "definitely a new
+        tester").
+        """
+        body = await self._call(GET_TEST_STUDENT_BY_PHONE_METHOD, {"phone": phone})
+        message = body.get("message")
+        if not isinstance(message, dict):
+            raise LmsApiError(
+                f"get_test_student_by_phone: unexpected response shape "
+                f"(no 'message' dict): {body!r}"
+            )
+        if message.get("success") is False:
+            return PhoneLookupResult(
+                success=False,
+                matched_student_count=0,
+                students=[],
+                error=message.get("error"),
+            )
+        raw_students = message.get("students")
+        students_raw = raw_students if isinstance(raw_students, list) else []
+        students = [
+            StudentCandidate(
+                student_id=str(s.get("student_id") or ""),
+                child_name=s.get("name1") or "",
+                grade=s.get("grade"),
+                tap_language=s.get("language"),
+            )
+            for s in students_raw
+            if isinstance(s, dict)
+        ]
+        matched_count_raw = message.get("matched_student_count")
+        matched_count = int(matched_count_raw) if matched_count_raw is not None else len(students)
+        return PhoneLookupResult(
+            success=True,
+            matched_student_count=matched_count,
+            students=students,
         )

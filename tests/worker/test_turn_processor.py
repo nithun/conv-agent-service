@@ -21,6 +21,7 @@ from app.config.settings import Settings
 from app.core.state_machine import EscalationReason, SessionState, new_session
 from app.ingress.glific_payload import GlificWebhookPayload
 from app.llm.types import ModelResponse
+from app.tools.lms_client import StudentCandidate
 from app.tools.lms_mock import MockTapLmsClient
 from app.tools.speech_client import AsrResult, TtsResult
 from app.worker.session_store import RedisSessionStore
@@ -1997,4 +1998,258 @@ async def test_LOW_CONFIDENCE_distress_bearing_transcript_still_escalates(sessio
     assert result.session is not None
     assert result.session.asr_failure_count == 0  # not counted as an ASR failure
     assert glific.sent_texts, "comfort reply must be sent"
+
+
+# ---- CR-013/ADR-014 J2: returning-by-phone wire-up -------------------------
+#
+# The `session is None` branch now tries a phone-only lookup (scoped
+# server-side to test batch BT00000025) BEFORE ever asking for a name.
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_single_match_skips_name_ask_and_greets(session_store) -> None:
+    from app.config.scripted_replies import get_scripted_reply
+
+    lms = MockTapLmsClient(
+        test_batch_students={
+            "919037771988": [
+                StudentCandidate(
+                    student_id="ST00491462",
+                    child_name="Nithu_Swift",
+                    grade="5",
+                    tap_language="English",
+                )
+            ]
+        }
+    )
+    glific = FakeGlificSender()
+    router = FakeModelRouter()
+
+    result = await process_turn(
+        _payload(contact_id="ret-1", phone="919037771988", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    # Exactly ONE turn, ONE reply — the name-ask never happened.
+    assert len(glific.sent_texts) == 1
+    assert "what's your name" not in glific.sent_texts[0][1].lower()
+    assert result.session is not None
+    assert result.session.state == SessionState.GREETING
+    assert result.session.identity.student_id == "ST00491462"
+    assert result.session.identity.child_name == "Nithu_Swift"
+    expected_reply = get_scripted_reply("greeting_direct", "English").format(
+        child_name="Nithu_Swift"
+    )
+    assert glific.sent_texts[0][1] == expected_reply
+    assert lms.test_student_by_phone_calls == ["919037771988"]
+    # register_test_student must never be called for a recognized returning
+    # tester (CR-013 decision 2 — no duplicate registration).
+    assert lms.register_test_student_calls == []
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_single_match_null_language_enters_language_choice(
+    session_store,
+) -> None:
+    """CR-013 decision 4 (post-TESTAIRESET): a null `language` from the
+    phone lookup must still fire the EXISTING GAP-0 re-prompt, collapsed
+    onto this SAME first inbound message (never a second ask-name turn).
+    """
+    from app.config.scripted_replies import language_choice_prompt
+
+    lms = MockTapLmsClient(
+        test_batch_students={
+            "919037771989": [
+                StudentCandidate(
+                    student_id="ST-RESET", child_name="Reset Tester", tap_language=None
+                )
+            ]
+        }
+    )
+    glific = FakeGlificSender()
+    router = FakeModelRouter()
+
+    result = await process_turn(
+        _payload(contact_id="ret-2", phone="919037771989", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert len(glific.sent_texts) == 1
+    assert result.session is not None
+    assert result.session.state == SessionState.LANGUAGE_CHOICE
+    assert result.session.identity.student_id == "ST-RESET"
+    assert glific.sent_texts[0][1] == language_choice_prompt()
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_zero_match_falls_back_to_ask_name_unchanged(
+    session_store,
+) -> None:
+    """AC (CR-013): zero phone-batch matches still receive today's
+    ask-name reply, and the existing register_test_student zero-candidate
+    path is completely unchanged (regression pin, byte-for-byte reply).
+    """
+    lms = MockTapLmsClient()  # default test_batch_students is empty
+    glific = FakeGlificSender()
+    router = FakeModelRouter()
+
+    result = await process_turn(
+        _payload(contact_id="ret-3", phone="9000000099999", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert lms.test_student_by_phone_calls == ["9000000099999"]
+    assert result.session is not None
+    assert result.session.state == SessionState.IDENTITY_CONFIRMATION
+    assert glific.sent_texts[-1][1] == "Hi! Before we start, what's your name?"
+
+    # The subsequent zero-candidate register_test_student auto-provision
+    # path is untouched by this CR.
+    result2 = await process_turn(
+        _payload(contact_id="ret-3", phone="9000000099999", text="Brand New Tester"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result2.session is not None
+    assert result2.session.identity.student_id is not None
+    assert len(lms.register_test_student_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_multi_match_enters_disambiguation_seam(session_store) -> None:
+    """>1 test-batch match reuses the EXISTING IDENTITY_CONFIRMATION +
+    candidates disambiguation branch (confirm_identity) verbatim — no new
+    disambiguation code path (P-005).
+    """
+    lms = MockTapLmsClient(
+        test_batch_students={
+            "919037771990": [
+                StudentCandidate(
+                    student_id="ST-NEW", child_name="Most Recent", tap_language="Hindi"
+                ),
+                StudentCandidate(
+                    student_id="ST-OLD", child_name="Older Sibling", tap_language="English"
+                ),
+            ]
+        }
+    )
+    glific = FakeGlificSender()
+    router = FakeModelRouter()
+
+    result = await process_turn(
+        _payload(contact_id="ret-4", phone="919037771990", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result.session is not None
+    assert result.session.state == SessionState.IDENTITY_CONFIRMATION
+    assert len(result.session.identity.candidates) == 2
+    assert "I found a few names" in glific.sent_texts[-1][1]
+
+    # The child's next reply is handled by the EXISTING confirm_identity
+    # branch (line ~547 of turn_processor.py) — zero new code.
+    result2 = await process_turn(
+        _payload(contact_id="ret-4", phone="919037771990", text="Older Sibling"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result2.session is not None
+    assert result2.session.identity.student_id == "ST-OLD"
+    assert result2.session.identity.tap_language == "English"
+    assert result2.session.state == SessionState.GREETING
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_lookup_failure_falls_back_to_ask_name(session_store) -> None:
+    """L-005 failure honesty: a phone-lookup LmsApiError (timeout/5xx) must
+    never crash the turn or silently claim the student doesn't exist — it
+    falls back to today's ask-name path exactly like a genuine zero-match.
+    """
+    from app.tools.lms_client import LmsApiError
+
+    class FailingPhoneLookupLmsClient(MockTapLmsClient):
+        async def get_test_student_by_phone(self, phone):
+            self.test_student_by_phone_calls.append(phone)
+            raise LmsApiError("simulated get_test_student_by_phone outage")
+
+    lms = FailingPhoneLookupLmsClient()
+    glific = FakeGlificSender()
+    router = FakeModelRouter()
+
+    result = await process_turn(
+        _payload(contact_id="ret-5", phone="919037771991", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+
+    assert lms.test_student_by_phone_calls == ["919037771991"]
+    assert result.handled is True
+    assert result.session is not None
+    assert result.session.state == SessionState.IDENTITY_CONFIRMATION
+    assert glific.sent_texts[-1][1] == "Hi! Before we start, what's your name?"
+
+
+@pytest.mark.asyncio
+async def test_existing_session_does_not_retrigger_phone_lookup(session_store) -> None:
+    """Regression: the phone-only lookup is a `session is None`-only
+    entrypoint. An in-progress conversation (session already resolved,
+    mid-identity-confirmation by name) must never call
+    `get_test_student_by_phone` on subsequent turns.
+    """
+    lms = MockTapLmsClient()  # DEFAULT_FIXTURE_STUDENTS: 917834811114 -> Aarav
+    glific = FakeGlificSender()
+    router = FakeModelRouter()
+
+    # Turn 1: session is None -> phone lookup runs once (zero test-batch
+    # match by default), falls back to ask-name.
+    await process_turn(
+        _payload(contact_id="ret-6", phone="917834811114", text="hi"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert lms.test_student_by_phone_calls == ["917834811114"]
+
+    # Turn 2: session now exists (IDENTITY_CONFIRMATION) -> resolves by
+    # name via the UNCHANGED by-name path. The phone lookup must not run
+    # again.
+    result = await process_turn(
+        _payload(contact_id="ret-6", phone="917834811114", text="Aarav"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert result.session is not None
+    assert result.session.identity.child_name == "Aarav"
+    assert lms.test_student_by_phone_calls == ["917834811114"]  # still just the one call
+
+    # Turn 3: session is now past identity resolution entirely (GREETING)
+    # -> the phone lookup must still not run.
+    await process_turn(
+        _payload(contact_id="ret-6", phone="917834811114", text="I'm ready"),
+        session_store=session_store,
+        lms_client=lms,
+        model_router=router,
+        glific_client=glific,
+    )
+    assert lms.test_student_by_phone_calls == ["917834811114"]
     assert "catch that" not in glific.sent_texts[-1][1]  # not the ASR clarification

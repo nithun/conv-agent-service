@@ -132,3 +132,39 @@ async def test_mock_reset_test_student_records_call():
     assert result.student_id == "STU-001"
     assert result.pe_reset is True
     assert client.reset_test_student_calls == [{"student_id": "STU-001", "push_to_glific": False}]
+
+
+# ---- get_test_student_by_phone (CR-013/ADR-014 Ask A) ----------------------
+
+
+@pytest.mark.asyncio
+async def test_mock_get_test_student_by_phone_default_is_zero_match():
+    """The fixture's `test_batch_students` dict is SEPARATE from
+    `students` and defaults empty — a phone that resolves via
+    `get_student_by_phone_and_name`'s DEFAULT_FIXTURE_STUDENTS must NOT
+    also resolve here unless a test opts in explicitly.
+    """
+    client = MockTapLmsClient()
+    result = await client.get_test_student_by_phone("917834811114")
+    assert result.success is True
+    assert result.matched_student_count == 0
+    assert result.students == []
+    assert client.test_student_by_phone_calls == ["917834811114"]
+
+
+@pytest.mark.asyncio
+async def test_mock_get_test_student_by_phone_single_match():
+    from app.tools.lms_client import StudentCandidate
+
+    client = MockTapLmsClient(
+        test_batch_students={
+            "9000000011": [
+                StudentCandidate(
+                    student_id="ST00491460", child_name="CR011 Tester One", tap_language="English"
+                )
+            ]
+        }
+    )
+    result = await client.get_test_student_by_phone("9000000011")
+    assert result.matched_student_count == 1
+    assert result.students[0].student_id == "ST00491460"

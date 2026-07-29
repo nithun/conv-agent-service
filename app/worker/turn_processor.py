@@ -43,6 +43,23 @@ whitelisted methods (`app/tools/lms_client.py`):
     `register_test_student` (a SINGLE call; supersedes CR-011's originally
     -assumed two-step register-then-re-resolve shape) instead of
     dead-ending in "I couldn't find that name...".
+
+CR-013/ADR-014 (2026-07-29, J2 returning-by-phone wire-up, approved per
+CR-013 frontmatter's annotation + ADR-014 BC-A/B/C/D resolution/AD-006 §7):
+the `session is None` branch (brand-new contact) now tries a phone-only
+lookup (`app/core/identity.py::resolve_returning_identity_by_phone`, keyed
+off `lms_client.get_test_student_by_phone`, server-side scoped to test
+batch `BT00000025`) BEFORE ever sending the ask-name reply. Zero matches OR
+the lookup itself failing (`LmsApiError` — L-005 failure honesty: logged,
+never silently treated as "definitely new") both fall through to today's
+UNCHANGED ask-name path. Exactly one match resolves identity directly and
+collapses what was two turns (ask name -> resolve) into ONE turn — greeting
+by name and resuming, running the SAME GAP-0 language check the by-name
+single-match path uses. More than one match reuses the EXISTING
+`IDENTITY_CONFIRMATION` + non-empty-`candidates` disambiguation branch
+below verbatim (P-005 — no new disambiguation code). A session that
+already exists in Redis never re-enters this branch at all, so an
+in-progress conversation never re-triggers the phone lookup.
 """
 
 from __future__ import annotations
@@ -62,7 +79,11 @@ from app.config.scripted_replies import (
 )
 from app.config.settings import Settings
 from app.core.guardrails_checks import detect_distress
-from app.core.identity import confirm_identity, resolve_identity_by_name
+from app.core.identity import (
+    confirm_identity,
+    resolve_identity_by_name,
+    resolve_returning_identity_by_phone,
+)
 from app.core.state_machine import (
     MAX_LANGUAGE_CHOICE_ATTEMPTS,
     EscalationReason,
@@ -413,8 +434,60 @@ async def process_turn(
             )
 
     if session is None:
-        # First message from this contact — ask for their name before any
-        # LMS call (get_student_by_phone_and_name requires buddy_name).
+        # First message from this contact. CR-013/ADR-014 (J2
+        # returning-by-phone): before ever asking for a name, try the
+        # phone-only lookup scoped server-side to test batch BT00000025.
+        # Zero matches or an outright lookup failure both fall through to
+        # today's unchanged ask-name path (L-005 failure honesty — never
+        # silently claim "definitely a new tester" on an LMS error).
+        phone_resolution: Any = None
+        try:
+            phone_resolution = await resolve_returning_identity_by_phone(
+                payload.contact_id, payload.phone, lms_client
+            )
+        except LmsApiError:
+            logger.exception(
+                "get_test_student_by_phone failed for contact=%s; falling back to "
+                "ask-name path",
+                payload.contact_id,
+            )
+
+        if phone_resolution is not None and phone_resolution.candidates:
+            session = phone_resolution.session
+            if phone_resolution.needs_confirmation:
+                # >1 match — reuses the EXISTING disambiguation seam
+                # verbatim: next turn's `IDENTITY_CONFIRMATION` +
+                # non-empty-`candidates` branch below (via `confirm_identity`)
+                # handles the child's reply, unchanged (P-005).
+                await session_store.save_session(session)
+                names = ", ".join(c["child_name"] for c in phone_resolution.candidates)
+                await glific_client.send_text(
+                    payload.contact_id, f"I found a few names: {names}. Which one is you?"
+                )
+                return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+
+            # Exactly one match — a recognized returning tester. Skip the
+            # name-ask entirely: resolve directly and, on this SAME first
+            # inbound message, run the identical GAP-0 language check the
+            # by-name single-match path uses below (a `language: null` LMS
+            # value — e.g. post-TESTAIRESET, CR-013 decision 4 — still
+            # triggers the LANGUAGE_CHOICE re-prompt).
+            if not session.identity.tap_language:
+                session.state = SessionState.IDENTITY_CONFIRMATION
+                transition(session, SessionState.LANGUAGE_CHOICE)
+                await session_store.save_session(session)
+                await glific_client.send_text(payload.contact_id, language_choice_prompt())
+                return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+            await session_store.save_session(session)
+            reply = get_scripted_reply("greeting_direct", session.identity.tap_language).format(
+                child_name=session.identity.child_name or "there"
+            )
+            await glific_client.send_text(payload.contact_id, reply)
+            return TurnProcessingResult(handled=True, session=session, reply_sent=True)
+
+        # Zero matches (genuinely new tester) OR the phone lookup failed —
+        # today's unchanged ask-name path (get_student_by_phone_and_name
+        # requires buddy_name, so it cannot be tried yet).
         # PRE-IDENTITY LITERAL (CR-007 Proposed behavior, #1 of 4): the
         # child's language is unknown until identity resolves — this string
         # genuinely cannot be looked up by tap_language at send time.

@@ -16,6 +16,7 @@ from app.tools.lms_client import (
     GET_NEXT_CONTENT_METHOD,
     GET_QUIZ_QUESTION_METHOD,
     GET_STUDENT_METHOD,
+    GET_TEST_STUDENT_BY_PHONE_METHOD,
     REGISTER_TEST_STUDENT_METHOD,
     RESET_TEST_STUDENT_METHOD,
     SAVE_SUBMISSION_METHOD,
@@ -272,14 +273,16 @@ async def test_get_next_content_with_token_unknown_student_not_found_shape():
     assert content is None
 
 
-def test_client_has_exactly_seven_public_methods_no_scope_creep():
+def test_client_has_exactly_eight_public_methods_no_scope_creep():
     """Guards against scope creep: no InteractionLog writes, no new
-    whitelisted APIs — the client's public surface is exactly these 7
+    whitelisted APIs — the client's public surface is exactly these 8
     methods (+ aclose for lifecycle). `start_quiz` joined 2026-07-17 under
     F-028; registration made PERMANENT by CR-031's approval (decision D-8,
     [[HANDOVER-TAP-AGENT-2026-07-17]]). `register_test_student`/
     `reset_test_student` joined 2026-07-27 under CR-011/ADR-013 tasks 6/7
-    (F-071 reply) — an 8th requires a PRD/CR.
+    (F-071 reply). `get_test_student_by_phone` joined 2026-07-29 under
+    CR-013/ADR-014 (the J2 returning-by-phone wire-up) — a 9th requires a
+    PRD/CR.
     """
     public_methods = {
         name
@@ -294,6 +297,7 @@ def test_client_has_exactly_seven_public_methods_no_scope_creep():
         "start_quiz",
         "register_test_student",
         "reset_test_student",
+        "get_test_student_by_phone",
         "aclose",
     }
     assert public_methods == expected
@@ -543,4 +547,190 @@ async def test_reset_test_student_error_path_5xx() -> None:
     client = TapLmsClient(BASE_URL, "test-api-key")
     with pytest.raises(LmsApiError):
         await client.reset_test_student("ST00491460")
+    await client.aclose()
+
+
+# ---- get_test_student_by_phone (CR-013/ADR-014 Ask A, 8th endpoint,
+# 2026-07-29 CONTRACT) -------------------------------------------------------
+#
+# Fixtures mirror the LIVE response shape verbatim from
+# HANDOVER-tap-agent-2026-07-29-cr013-returning-and-language-REPLY.md.
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_test_student_by_phone_single_match() -> None:
+    route = respx.post(f"{BASE_URL}/api/method/{GET_TEST_STUDENT_BY_PHONE_METHOD}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "message": {
+                    "status_code": 200,
+                    "success": True,
+                    "phone": "9000000011",
+                    "matched_student_count": 1,
+                    "students": [
+                        {
+                            "student_id": "ST00491460",
+                            "name1": "CR011 Tester One",
+                            "phone": "919000000011",
+                            "language": "English",
+                            "status": "active",
+                            "grade": "5",
+                            "pe_name": "01qn841h6t",
+                            "batch": "BT00000025",
+                            "last_activity": "2026-07-29 17:40:29.817256",
+                        }
+                    ],
+                }
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key", frappe_token="key:secret")
+    result = await client.get_test_student_by_phone("9000000011")
+    await client.aclose()
+
+    assert result.success is True
+    assert result.matched_student_count == 1
+    assert len(result.students) == 1
+    student = result.students[0]
+    assert student.student_id == "ST00491460"
+    assert student.child_name == "CR011 Tester One"
+    assert student.grade == "5"
+    assert student.tap_language == "English"
+
+    import json as _json
+
+    sent = _json.loads(route.calls.last.request.content)
+    assert sent == {"api_key": "test-api-key", "phone": "9000000011"}
+    assert route.calls.last.request.headers["authorization"] == "token key:secret"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_test_student_by_phone_null_language_after_reset() -> None:
+    """CR-013 decision 4: `reset_test_student` clears the student's
+    `language` — a subsequent phone lookup must return `tap_language=None`
+    (not coerced to any default), so the caller's existing GAP-0 falsy
+    check re-fires the LANGUAGE_CHOICE re-prompt.
+    """
+    respx.post(f"{BASE_URL}/api/method/{GET_TEST_STUDENT_BY_PHONE_METHOD}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "message": {
+                    "status_code": 200,
+                    "success": True,
+                    "phone": "9000000011",
+                    "matched_student_count": 1,
+                    "students": [
+                        {
+                            "student_id": "ST00491460",
+                            "name1": "CR011 Tester One",
+                            "phone": "919000000011",
+                            "language": None,
+                            "status": "active",
+                            "grade": "5",
+                            "pe_name": "01qn841h6t",
+                            "batch": "BT00000025",
+                            "last_activity": "2026-07-29 17:40:29.817256",
+                        }
+                    ],
+                }
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    result = await client.get_test_student_by_phone("9000000011")
+    await client.aclose()
+
+    assert result.matched_student_count == 1
+    assert result.students[0].tap_language is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_test_student_by_phone_multi_match_is_most_recent_first() -> None:
+    respx.post(f"{BASE_URL}/api/method/{GET_TEST_STUDENT_BY_PHONE_METHOD}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "message": {
+                    "status_code": 200,
+                    "success": True,
+                    "phone": "9000000099",
+                    "matched_student_count": 2,
+                    "students": [
+                        {
+                            "student_id": "ST-NEW",
+                            "name1": "Most Recent",
+                            "language": "Hindi",
+                            "last_activity": "2026-07-29 18:00:00.000000",
+                        },
+                        {
+                            "student_id": "ST-OLD",
+                            "name1": "Older Sibling",
+                            "language": "English",
+                            "last_activity": "2026-07-20 10:00:00.000000",
+                        },
+                    ],
+                }
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    result = await client.get_test_student_by_phone("9000000099")
+    await client.aclose()
+
+    assert result.matched_student_count == 2
+    assert [s.student_id for s in result.students] == ["ST-NEW", "ST-OLD"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_test_student_by_phone_zero_match() -> None:
+    respx.post(f"{BASE_URL}/api/method/{GET_TEST_STUDENT_BY_PHONE_METHOD}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "message": {
+                    "status_code": 200,
+                    "success": True,
+                    "phone": "9111100000",
+                    "matched_student_count": 0,
+                    "students": [],
+                }
+            },
+        )
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    result = await client.get_test_student_by_phone("9111100000")
+    await client.aclose()
+
+    assert result.success is True
+    assert result.matched_student_count == 0
+    assert result.students == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_test_student_by_phone_error_path_5xx() -> None:
+    respx.post(f"{BASE_URL}/api/method/{GET_TEST_STUDENT_BY_PHONE_METHOD}").mock(
+        return_value=httpx.Response(500, text="internal error")
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    with pytest.raises(LmsApiError):
+        await client.get_test_student_by_phone("9000000011")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_get_test_student_by_phone_unexpected_shape_raises() -> None:
+    respx.post(f"{BASE_URL}/api/method/{GET_TEST_STUDENT_BY_PHONE_METHOD}").mock(
+        return_value=httpx.Response(200, json={"no_message_key": True})
+    )
+    client = TapLmsClient(BASE_URL, "test-api-key")
+    with pytest.raises(LmsApiError):
+        await client.get_test_student_by_phone("9000000011")
     await client.aclose()

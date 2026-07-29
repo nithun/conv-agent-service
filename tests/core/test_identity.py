@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.identity import confirm_identity, resolve_identity_by_name
+from app.core.identity import (
+    confirm_identity,
+    resolve_identity_by_name,
+    resolve_returning_identity_by_phone,
+)
 from app.core.state_machine import SessionState
 from app.tools.lms_client import StudentCandidate
 from app.tools.lms_mock import MockTapLmsClient
@@ -148,3 +152,80 @@ async def test_confirm_identity_leaves_tap_language_none_when_candidate_has_none
     session = resolution.session
     assert confirm_identity(session, "Aman") is True
     assert session.identity.tap_language is None
+
+
+# ---- resolve_returning_identity_by_phone (CR-013/ADR-014 Ask A, J2) --------
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_single_match_resolves_immediately():
+    lms = MockTapLmsClient(
+        test_batch_students={
+            "9000000011": [
+                StudentCandidate(
+                    student_id="ST00491460",
+                    child_name="CR011 Tester One",
+                    grade="5",
+                    tap_language="English",
+                )
+            ]
+        }
+    )
+    resolution = await resolve_returning_identity_by_phone("contact-20", "9000000011", lms)
+    assert resolution.needs_confirmation is False
+    assert resolution.session.state == SessionState.GREETING
+    assert resolution.session.identity.student_id == "ST00491460"
+    assert resolution.session.identity.child_name == "CR011 Tester One"
+    assert resolution.session.identity.tap_language == "English"
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_single_match_null_language_after_reset():
+    """CR-013 decision 4: a reset clears `language` server-side — the
+    phone-only resolution must carry that None through unchanged, same
+    provenance discipline as `_identity_from_candidate`'s docstring for the
+    by-name path (GAP-0's trigger condition).
+    """
+    lms = MockTapLmsClient(
+        test_batch_students={
+            "9000000012": [
+                StudentCandidate(
+                    student_id="ST-RESET", child_name="Reset Tester", tap_language=None
+                )
+            ]
+        }
+    )
+    resolution = await resolve_returning_identity_by_phone("contact-21", "9000000012", lms)
+    assert resolution.session.identity.tap_language is None
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_multi_match_needs_confirmation():
+    lms = MockTapLmsClient(
+        test_batch_students={
+            "9000000099": [
+                StudentCandidate(
+                    student_id="ST-NEW", child_name="Most Recent", tap_language="Hindi"
+                ),
+                StudentCandidate(
+                    student_id="ST-OLD", child_name="Older Sibling", tap_language="English"
+                ),
+            ]
+        }
+    )
+    resolution = await resolve_returning_identity_by_phone("contact-22", "9000000099", lms)
+    assert resolution.needs_confirmation is True
+    assert resolution.session.state == SessionState.IDENTITY_CONFIRMATION
+    assert len(resolution.candidates) == 2
+    # Reuses the SAME disambiguation seam confirm_identity already handles.
+    assert confirm_identity(resolution.session, "Older Sibling") is True
+    assert resolution.session.identity.student_id == "ST-OLD"
+    assert resolution.session.identity.tap_language == "English"
+
+
+@pytest.mark.asyncio
+async def test_returning_by_phone_zero_match_returns_no_candidates():
+    lms = MockTapLmsClient()  # default test_batch_students is empty
+    resolution = await resolve_returning_identity_by_phone("contact-23", "919000000000", lms)
+    assert resolution.candidates == []
+    assert resolution.needs_confirmation is False

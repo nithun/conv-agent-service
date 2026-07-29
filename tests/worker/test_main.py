@@ -160,10 +160,17 @@ async def test_process_turn_fn_rearms_turn_flow_after_processing() -> None:
     session_store = RedisSessionStore(redis, Settings(_env_file=None))
     glific = RecordingGlificClient()
 
+    # CR-013/ADR-014: the `session is None` branch now tries a phone-only
+    # lookup BEFORE the ask-name reply, so `lms_client` can no longer be a
+    # bare `object()` here — `MockTapLmsClient()`'s default
+    # `test_batch_students` is empty, so this preserves the exact zero-match
+    # ask-name behavior this test asserts.
+    from app.tools.lms_mock import MockTapLmsClient
+
     process_turn_fn = build_process_turn_fn(
         session_store=session_store,
-        lms_client=object(),  # first-message branch never touches the LMS
-        model_router=object(),  # ...nor the model router
+        lms_client=MockTapLmsClient(),
+        model_router=object(),  # never touched on the ask-name path
         glific_client=glific,  # type: ignore[arg-type]
         turn_flow_id="26",
     )
@@ -208,9 +215,13 @@ async def test_process_turn_fn_skips_rearm_when_flow_id_unset() -> None:
     session_store = RedisSessionStore(redis, Settings(_env_file=None))
     glific = RecordingGlificClient()
 
+    # CR-013/ADR-014: see the sibling test above — the `session is None`
+    # branch now needs a real (mock) LMS client for its phone-only lookup.
+    from app.tools.lms_mock import MockTapLmsClient
+
     process_turn_fn = build_process_turn_fn(
         session_store=session_store,
-        lms_client=object(),
+        lms_client=MockTapLmsClient(),
         model_router=object(),
         glific_client=glific,  # type: ignore[arg-type]
         turn_flow_id="",

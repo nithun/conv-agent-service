@@ -78,6 +78,9 @@ def test_lms_client_write_methods_are_the_known_whitelisted_set() -> None:
         # but not a progress WRITE this test is guarding either — unchanged
         # classification from its own docstring.
         "start_quiz",
+        # CR-013/ADR-014 Ask A (2026-07-29): a genuine pure read, scoped
+        # server-side to test batch BT00000025 — never a progress write.
+        "get_test_student_by_phone",
         "aclose",
     }
     write_methods = public_methods - read_only_methods

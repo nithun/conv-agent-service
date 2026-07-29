@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.core.state_machine import SessionData, StudentIdentity, new_session
-from app.tools.lms_client import StudentCandidate, StudentLookupResult
+from app.tools.lms_client import PhoneLookupResult, StudentCandidate, StudentLookupResult
 
 
 class _StudentLookupClient(Protocol):
@@ -31,6 +31,9 @@ class _StudentLookupClient(Protocol):
     async def get_student_by_phone_and_name(
         self, phone_number: str, buddy_name: str
     ) -> StudentLookupResult: ...
+
+    # CR-013/ADR-014 — the J2 returning-by-phone lookup.
+    async def get_test_student_by_phone(self, phone: str) -> PhoneLookupResult: ...
 
 
 @dataclass
@@ -78,6 +81,61 @@ async def resolve_identity_by_name(
         # confirm_identity below can populate session.identity.tap_language
         # on a successful multi-candidate confirm — StudentCandidate always
         # has the field (possibly None), previously dropped here.
+        session.identity.candidates = [
+            {
+                "student_id": c.student_id,
+                "child_name": c.child_name,
+                "tap_language": c.tap_language,
+            }
+            for c in candidates
+        ]
+
+    return IdentityResolution(
+        session=session,
+        needs_confirmation=needs_confirmation,
+        candidates=[{"student_id": c.student_id, "child_name": c.child_name} for c in candidates],
+    )
+
+
+async def resolve_returning_identity_by_phone(
+    glific_contact_id: str, phone: str, lms_client: _StudentLookupClient
+) -> IdentityResolution:
+    """CR-013 Ask A / ADR-014 — the J2 returning-by-phone resolution: tried
+    at session start, BEFORE ever asking the child's name
+    (`app/worker/turn_processor.py`'s `session is None` branch). Scoped
+    server-side to the dedicated test batch `BT00000025` (ADR-014 BC-B) —
+    this function does no batch filtering itself, it trusts the LMS's own
+    scoping (`TapLmsClient.get_test_student_by_phone`'s docstring).
+
+    Deliberately mirrors `resolve_identity_by_name` above almost verbatim
+    (same `IdentityResolution` shape, same `_identity_from_candidate` reuse,
+    same candidate-stash shape) so the caller's EXISTING disambiguation seam
+    (`confirm_identity` / the `IDENTITY_CONFIRMATION` + non-empty
+    `candidates` branch in `turn_processor.py`) handles the multi-match case
+    with zero new code (P-005) — this function only supplies a different
+    LMS query as the candidate source.
+
+    - Zero matches: returns an `IdentityResolution` with empty candidates —
+      the caller (`turn_processor.py`) falls back to today's unchanged
+      ask-name path (identical handling to a lookup FAILURE, L-005 failure
+      honesty).
+    - Exactly one match: resolves directly via `_identity_from_candidate`
+      (`child_name`/`tap_language` sourced from the LMS record, never from
+      user input) — no name-ask turn.
+    - More than one match: stashes `session.identity.candidates` from the
+      full (most-recent-first) match list — the same shape
+      `resolve_identity_by_name`'s own multi-candidate branch builds.
+    """
+    lookup = await lms_client.get_test_student_by_phone(phone)
+    candidates = lookup.students if lookup.success else []
+    needs_confirmation = len(candidates) > 1
+    session = new_session(
+        glific_contact_id, phone, needs_identity_confirmation=len(candidates) != 1
+    )
+
+    if len(candidates) == 1:
+        session.identity = _identity_from_candidate(candidates[0])
+    elif needs_confirmation:
         session.identity.candidates = [
             {
                 "student_id": c.student_id,
