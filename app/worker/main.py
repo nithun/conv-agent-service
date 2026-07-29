@@ -48,6 +48,7 @@ from app.queue.settings import STREAM_KEY_PREFIX
 from app.tools.lms_client import TapLmsClient
 from app.worker.consumer_loop import drain_contact_stream_once
 from app.worker.escalation_consumer import drain_escalation_stream_once
+from app.worker.heartbeat import write_heartbeat
 from app.worker.session_store import RedisSessionStore
 from app.worker.turn_processor import (
     TurnProcessingResult,
@@ -241,6 +242,19 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
                 # level exception here never stops turn processing for
                 # every contact.
                 logger.exception("unexpected failure draining escalation stream; continuing loop")
+
+            # L-025 fix (F-083): write the liveness heartbeat AFTER this
+            # iteration's drain work completes, not before — a hung drain
+            # (process alive, stuck, not actually processing) must also let
+            # the key go stale, matching /health/ready's + the docker
+            # healthcheck's "worker is not just alive but draining" contract
+            # (app/worker/heartbeat.py). A failure writing the heartbeat
+            # itself must never crash the loop — the per-entry drains above
+            # already apply the same backstop reasoning.
+            try:
+                await write_heartbeat(redis)
+            except Exception:
+                logger.exception("unexpected failure writing worker heartbeat; continuing loop")
 
             iteration += 1
             if max_iterations is None or iteration < max_iterations:

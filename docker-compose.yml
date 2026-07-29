@@ -43,6 +43,27 @@ services:
     build:
       context: .
       target: dev
+    # L-025 fix (F-083 — the worker container died while `app`'s `/health`
+    # kept returning 200, silently dropping every turn reply and distress
+    # escalation, and nothing surfaced it except a human eyeballing
+    # `docker compose ps`). `restart: unless-stopped` + the healthcheck
+    # below mirror the exact F-078 discipline already applied to `litellm`
+    # (see that service's comment block): recover automatically after a
+    # crash/host reboot, and make `docker compose ps` show `worker` as
+    # unhealthy — not silently "not Up" — the moment its own liveness
+    # heartbeat (app/worker/heartbeat.py) goes missing or stale. The CMD
+    # is python-based, not curl/wget, for the same reason litellm's is:
+    # this image has neither installed. Checks TRUE liveness (the worker's
+    # own drain loop is what writes the heartbeat, app/worker/main.py), not
+    # just "the process didn't crash" — a HUNG worker (alive, stuck
+    # mid-drain) shows unhealthy too.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker.healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     env_file:
       - .env
     environment:

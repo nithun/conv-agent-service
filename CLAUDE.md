@@ -107,6 +107,17 @@ docker compose up --build   # boots app (HOST PORT 8001, public) + worker +
                             # (127.0.0.1:4001) — see .env.example
 curl http://localhost:8001/health
 docker compose ps           # confirm app, worker, redis, langfuse, litellm all Up
+# L-025b (F-083 — the worker died once while `/health` above kept returning
+# 200, silently dropping every turn reply and distress escalation): a
+# fast-ack 200 from `/health` is RECEIPT, not delivery. Before declaring the
+# stack live, ALSO confirm the WORKER specifically:
+curl http://localhost:8001/health/ready   # must be 200 with both
+                                           # redis.ok and worker.ok true, not
+                                           # just /health's bare {"status":"ok"}
+docker compose ps worker                  # must show "Up ... (healthy)",
+                                           # not just "Up" (the healthcheck,
+                                           # task 2.2, reads the SAME worker
+                                           # heartbeat /health/ready does)
 docker compose down         # tear down when finished
 ```
 
@@ -137,6 +148,20 @@ returning 200 OK) but every turn reply and every distress escalation is
 silently dropped — there is no error surfaced anywhere in that path. Run
 `docker compose ps` after `up` and confirm `worker` shows `Up`, not just
 `app`/`redis`.
+
+**L-025 (2026-07-29, F-083's own fix): `docker compose ps` showing `worker`
+as merely `Up` is NOT sufficient — that gap is exactly what let F-083 stay
+invisible (the worker container died while `app`'s `/health` kept
+returning 200).** `worker` now carries a real `healthcheck:` (mirroring
+`litellm`'s F-078 precedent) driven by a Redis heartbeat
+(`app/worker/heartbeat.py`) it writes once per loop iteration; `docker
+compose ps` now shows `worker` as `Up ... (healthy)` — or `unhealthy`/
+`Exited` if it's dead or hung — instead of a bare `Up` that can't tell the
+two apart. `GET /health/ready` (`app/ingress/readiness.py`) exposes the
+SAME signal over HTTP (plus a Redis-reachability check) for a
+scripted/remote check: 200 only when both Redis is reachable AND the
+worker's heartbeat is fresh, 503 identifying which one failed otherwise.
+See the bring-up steps above for the exact commands.
 
 **App publishes on host port 8001, not 8000** — tap-buddy (still the live
 Glific webhook target until F-019's cutover) holds 8000, and both services

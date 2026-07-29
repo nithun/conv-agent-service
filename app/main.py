@@ -24,6 +24,7 @@ from app.ingress.contact_allowlist import resolve_contact_allowlist
 from app.ingress.glific_webhook import router as webhook_router
 from app.ingress.health import router as health_router
 from app.ingress.media import router as media_router
+from app.ingress.readiness import router as readiness_router
 from app.ingress.webhook_auth import resolve_glific_webhook_secret
 from app.llm.router import build_default_model_router
 from app.tools.lms_client import TapLmsClient
@@ -136,6 +137,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.include_router(health_router)
+    app.include_router(readiness_router)
     app.include_router(webhook_router)
     app.include_router(media_router)
     return app
