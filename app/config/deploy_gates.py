@@ -34,6 +34,17 @@ into live production" (F-043) — never a live-production TAP LMS.
 anywhere else, INCLUDING when it is simply unset (unset must never be read
 as "not production, skip the check" — the same unset-is-not-a-pass
 discipline CR-009/CR-010's own gates apply).
+
+**BC-4 (CR-014 / ADR-015, added 2026-07-29) — conv-AI flow-orchestrator
+production hard-refuse.** `Settings.flow_orchestrator_enabled` is
+explicitly INTERNAL-TESTING-ONLY (Nithun's condition, ADR-015) — no
+production topology exists yet for it, and it must never be enabled on one.
+`resolve_flow_orchestrator_production_gate` refuses to boot if
+`environment == "production"` AND `flow_orchestrator_enabled` is `True`.
+Same production-only trigger shape as GL-005-a/b (not CR-009/CR-010's
+`!= "local"` shape) — the default (`False`) always passes this gate, so a
+genuinely-unconfigured production deploy is unaffected; only an operator
+who has explicitly flipped the flag on is refused.
 """
 
 from __future__ import annotations
@@ -138,4 +149,26 @@ def resolve_lms_write_target_gate(settings: Settings) -> None:
             "the throwaway restore that feeds nothing back into live production "
             "(ADR-013 GL-005-b). This must never resolve to a live-production "
             "TAP LMS."
+        )
+
+
+def resolve_flow_orchestrator_production_gate(settings: Settings) -> None:
+    """ADR-015 BC-4. Called once at app/worker startup, alongside the other
+    boot gates and BEFORE any client is constructed.
+
+    - `settings.environment == "production"` AND
+      `settings.flow_orchestrator_enabled` is `True`: raises `RuntimeError`.
+      Same production-only trigger condition as GL-005-a/GL-005-b.
+    - Anything else (any non-`"production"` environment, or the flag left at
+      its `False` default): no raise.
+    """
+    # environment compared case/whitespace-normalized (same as GL-005-a/b).
+    env = settings.environment.strip().lower()
+    if env == "production" and settings.flow_orchestrator_enabled:
+        raise RuntimeError(
+            "Settings.flow_orchestrator_enabled=True while ENVIRONMENT='production' "
+            "-- refusing to boot. The conv-AI flow-orchestrator capability "
+            "(start_glific_flow, CR-014/ADR-015) is INTERNAL-TESTING-ONLY and must "
+            "not be enabled on any production topology until ADR-015's BC-1..BC-5 "
+            "preconditions are independently met (ADR-015 BC-4)."
         )

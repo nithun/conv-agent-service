@@ -1,0 +1,43 @@
+# Flow registry: name-keyed catalog of Glific flows the conv-AI agent may
+# agent-initiate via the `start_glific_flow` tool (CR-014/ADR-015).
+#
+# STRUCTURAL KILL SWITCH #2 (CR-014 AC-1): if this file is absent or
+# resolves to zero entries, `start_glific_flow` is never offered to the
+# model, regardless of Settings.flow_orchestrator_enabled. Kill switch #1
+# is that same setting (default False) -- see app/config/settings.py.
+#
+# KEYING: entries are keyed by stable NAME (top-level YAML key), never the
+# mutable `flow_id`. `flow_id` is the CURRENT resolved numeric id -- MUST be
+# re-synced in the SAME session a flow is re-imported/republished
+# (glific-platform hands over an updated id, or Nithun edits this file
+# directly) -- the exact manual-refresh discipline GLIFIC_TURN_FLOW_ID
+# already requires (the 26->80 staleness class), just registry-file-scoped.
+#
+# BC-3 (structural no-loopback guard, app/config/flow_registry.py): no entry
+# here may carry a `flow_id` equal to GLIFIC_TURN_FLOW_ID -- the loader
+# rejects at boot if one does.
+#
+# SOURCE OF THESE TWO ENTRIES: glific-platform's
+# HANDOVER-tap-agent-convai-flow-orchestrator-2026-07-29.md starter catalog,
+# as cited verbatim in CR-014 Proposed behavior point 2 (Nithun-authored
+# `when_to_use` text, not placeholder -- CR-014 AC-8's floor for these two).
+# The `flow_id` values below are LIVE-VERIFIED (2026-07-29, feature-builder,
+# `flows` GraphQL query against local dev Glific): "TAP Buddy" = 25,
+# "Registration Workflow" = 6, both `isActive: true` -- matches this file
+# exactly. See AD-002's external-contracts table for the full live-check
+# citation (dispatch + re-arm suppression also live-verified against these
+# ids this session).
+
+"TAP Buddy":
+  flow_id: "25"
+  when_to_use: >
+    The contact wants the voice-first TAP Buddy experience, or explicitly
+    asks to "talk to buddy"/"use voice". Always hand off via this flow --
+    do not try to conduct a voice session yourself.
+
+"Registration Workflow":
+  flow_id: "6"
+  when_to_use: >
+    A contact who is NOT a recognized student wants to register for TAP
+    LMS. Only start this for a contact whose identity resolution has
+    already failed/is not a student in this session.

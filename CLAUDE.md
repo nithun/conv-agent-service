@@ -79,7 +79,10 @@ app/
 ├── queue/           Redis Streams enqueue/dedupe (SETNX), contact_id partitioning (L-003)
 ├── worker/          async consumer group: per-contact ordered processing, retry/DLQ (P-002)
 ├── llm/             ModelRouter + Langfuse tracing wrapper (L-004, P-003)
-├── tools/           Frappe tool bindings for the conversation-turn loop (P-001, L-001)
+├── tools/           Frappe tool bindings for the conversation-turn loop (P-001, L-001),
+│                    plus the CR-014/ADR-015 start_glific_flow tool schema (Glific-,
+│                    not Frappe-facing — dispatch itself lives in delivery/worker, see
+│                    app/tools/definitions.py::start_glific_flow_tool)
 └── delivery/        Glific GraphQL client (createAndSendMessage, startContactFlow, etc.)
 
 tests/               mirrors app/ 1:1 (tests/ingress, tests/queue, ...)

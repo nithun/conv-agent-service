@@ -15,7 +15,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.config.deploy_gates import resolve_langfuse_host_gate, resolve_lms_write_target_gate
+from app.config.deploy_gates import (
+    resolve_flow_orchestrator_production_gate,
+    resolve_langfuse_host_gate,
+    resolve_lms_write_target_gate,
+)
 from app.config.settings import Settings
 
 SELF_HOSTED_LANGFUSE_HOST = "http://langfuse:3000"
@@ -176,3 +180,49 @@ def test_lms_write_target_gate_fires_on_casing_variant_of_production(environment
 
     with pytest.raises(RuntimeError, match="FRAPPE_API_URL"):
         resolve_lms_write_target_gate(settings)
+
+
+# ---- BC-4 (CR-014 / ADR-015, 2026-07-29): conv-AI flow-orchestrator ---------
+# production hard-refuse -------------------------------------------------
+
+
+def test_flow_orchestrator_gate_rejects_production_with_flag_true() -> None:
+    settings = _settings(flow_orchestrator_enabled=True)
+
+    with pytest.raises(RuntimeError, match="flow_orchestrator_enabled"):
+        resolve_flow_orchestrator_production_gate(settings)
+
+
+def test_flow_orchestrator_gate_passes_production_with_flag_default_false() -> None:
+    settings = _settings()  # flow_orchestrator_enabled defaults False
+
+    resolve_flow_orchestrator_production_gate(settings)  # must not raise
+
+
+@pytest.mark.parametrize("environment", ["local", "staging", ""])
+def test_flow_orchestrator_gate_passes_any_non_production_environment_even_with_flag_true(
+    environment: str,
+) -> None:
+    settings = _settings(environment=environment, flow_orchestrator_enabled=True)
+
+    resolve_flow_orchestrator_production_gate(settings)  # must not raise
+
+
+@pytest.mark.parametrize(
+    "environment", ["Production", "PRODUCTION", " production ", "production\n"]
+)
+def test_flow_orchestrator_gate_fires_on_casing_or_whitespace_variant_of_production(
+    environment: str,
+) -> None:
+    settings = _settings(environment=environment, flow_orchestrator_enabled=True)
+
+    with pytest.raises(RuntimeError, match="flow_orchestrator_enabled"):
+        resolve_flow_orchestrator_production_gate(settings)
+
+
+def test_all_three_gates_are_pure_functions_no_client_side_effects() -> None:
+    settings = _settings()
+
+    resolve_langfuse_host_gate(settings)
+    resolve_lms_write_target_gate(settings)
+    resolve_flow_orchestrator_production_gate(settings)

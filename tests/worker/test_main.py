@@ -365,3 +365,124 @@ async def test_run_worker_loop_threads_speech_client_and_settings_into_turn_fn(
 
     assert captured.get("speech_client") is sentinel_speech_client
     assert captured.get("settings") is configured_settings
+
+
+# ---- CR-014/ADR-015: flow-orchestrator boot wiring -------------------------
+
+
+def _patch_worker_boot_deps(monkeypatch, worker_main_module, settings) -> None:
+    """Shared boot-dependency stubbing for the flow-orchestrator wiring
+    tests below — mirrors the pattern every prior run_worker_loop test in
+    this file repeats inline."""
+    fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr(worker_main_module, "_build_redis_client", lambda s: fake_redis)
+
+    class _Noop:
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(worker_main_module, "TapLmsClient", lambda *a, **kw: _Noop())
+    monkeypatch.setattr(worker_main_module, "GlificClient", lambda *a, **kw: _Noop())
+    monkeypatch.setattr(worker_main_module, "build_default_model_router", lambda *a, **kw: object())
+    monkeypatch.setattr(worker_main_module, "get_settings", lambda: settings)
+
+    async def _noop_drain(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(worker_main_module, "drain_escalation_stream_once", _noop_drain)
+
+
+@pytest.mark.asyncio
+async def test_run_worker_loop_threads_the_loaded_registry_when_flag_enabled(monkeypatch) -> None:
+    import app.worker.main as worker_main_module
+    from app.config.flow_registry import FlowRegistry, FlowRegistryEntry
+
+    settings = Settings(_env_file=None, flow_orchestrator_enabled=True, glific_turn_flow_id="80")
+    _patch_worker_boot_deps(monkeypatch, worker_main_module, settings)
+
+    fake_registry = FlowRegistry(
+        entries={"TAP Buddy": FlowRegistryEntry(name="TAP Buddy", flow_id="25", when_to_use="x")}
+    )
+    monkeypatch.setattr(
+        worker_main_module, "load_flow_registry", lambda **kw: fake_registry
+    )
+
+    captured: dict[str, object] = {}
+    real_build = worker_main_module.build_process_turn_fn
+
+    def _recording_build(**kwargs):
+        captured.update(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(worker_main_module, "build_process_turn_fn", _recording_build)
+
+    await worker_main_module.run_worker_loop(max_iterations=1)
+
+    assert captured.get("flow_registry") is fake_registry
+
+
+@pytest.mark.asyncio
+async def test_run_worker_loop_passes_none_registry_when_flag_disabled(monkeypatch) -> None:
+    """Kill switch #1: even though the loader resolves a non-empty
+    registry, the flag defaulting False means None is threaded through to
+    build_process_turn_fn — the tool must never be offered."""
+    import app.worker.main as worker_main_module
+    from app.config.flow_registry import FlowRegistry, FlowRegistryEntry
+
+    settings = Settings(_env_file=None)  # flow_orchestrator_enabled defaults False
+    _patch_worker_boot_deps(monkeypatch, worker_main_module, settings)
+
+    non_empty_registry = FlowRegistry(
+        entries={"TAP Buddy": FlowRegistryEntry(name="TAP Buddy", flow_id="25", when_to_use="x")}
+    )
+    monkeypatch.setattr(
+        worker_main_module, "load_flow_registry", lambda **kw: non_empty_registry
+    )
+
+    captured: dict[str, object] = {}
+    real_build = worker_main_module.build_process_turn_fn
+
+    def _recording_build(**kwargs):
+        captured.update(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(worker_main_module, "build_process_turn_fn", _recording_build)
+
+    await worker_main_module.run_worker_loop(max_iterations=1)
+
+    assert captured.get("flow_registry") is None
+
+
+@pytest.mark.asyncio
+async def test_run_worker_loop_boot_fails_on_a_colliding_registry_regardless_of_flag(
+    monkeypatch,
+) -> None:
+    """BC-3: the registry is loaded + validated UNCONDITIONALLY, even with
+    the flag left at its False default — a bad registry file must fail
+    loudly at boot rather than lie latent until someone flips the flag."""
+    import app.worker.main as worker_main_module
+
+    settings = Settings(_env_file=None)  # flag defaults False
+    _patch_worker_boot_deps(monkeypatch, worker_main_module, settings)
+
+    def _raising_loader(**kwargs):
+        raise RuntimeError("flow_registry.yaml entries collide with the turn-relay flow id")
+
+    monkeypatch.setattr(worker_main_module, "load_flow_registry", _raising_loader)
+
+    with pytest.raises(RuntimeError, match="collide"):
+        await worker_main_module.run_worker_loop(max_iterations=1)
+
+
+@pytest.mark.asyncio
+async def test_run_worker_loop_calls_the_flow_orchestrator_production_gate(monkeypatch) -> None:
+    """BC-4: run_worker_loop must itself refuse to boot in production with
+    the flag on — not only app/main.py's lifespan (the worker process can
+    be deployed/scaled independently of the FastAPI ingress)."""
+    import app.worker.main as worker_main_module
+
+    settings = Settings(_env_file=None, environment="production", flow_orchestrator_enabled=True)
+    _patch_worker_boot_deps(monkeypatch, worker_main_module, settings)
+
+    with pytest.raises(RuntimeError, match="flow_orchestrator_enabled"):
+        await worker_main_module.run_worker_loop(max_iterations=1)

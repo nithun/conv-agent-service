@@ -25,6 +25,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.config.flow_registry import FlowRegistry
 from app.config.language_map import resolve_locale
 from app.config.scripted_replies import get_scripted_reply
 from app.core.guardrails_checks import (
@@ -49,6 +50,7 @@ from app.tools.definitions import (
     GET_NEXT_CONTENT_TOOL,
     GET_QUIZ_QUESTION_DETAILS_TOOL,
     SAVE_SUBMISSION_TOOL,
+    start_glific_flow_tool,
 )
 from app.tools.lms_client import LmsApiError
 
@@ -89,21 +91,46 @@ class TurnOutcome:
     escalated: bool = False
     tool_calls_made: list[str] | None = None
     advanced_to: SessionState | None = None
+    # CR-014/ADR-015: set to the flow registry's NAME key (never a flow_id)
+    # when this turn's model call resolved a valid `start_glific_flow`
+    # request. The caller (app.worker.turn_processor.process_turn) is the
+    # one that actually dispatches to Glific — this module stays
+    # Glific-import-free (isolation invariant, tests/core/test_isolation.py).
+    pending_flow_start: str | None = None
 
 
-def _tools_for_state(state: SessionState) -> list[dict[str, Any]]:
+def _tools_for_state(
+    state: SessionState, flow_registry: FlowRegistry | None = None
+) -> list[dict[str, Any]]:
     """Fixed tool set bound to state — the model may only call
     get_next_content at content_intro, get_quiz_question_details only
     during doubt_clearing, save_submission only when a completion signal
     is plausible (activity_in_progress/redirect).
+
+    CR-014/ADR-015: `start_glific_flow` is appended for EVERY
+    run_turn-reachable state (not gated by which LMS tool that state
+    already binds) whenever `flow_registry` is non-None AND resolves to
+    >=1 entry — the two independent structural kill switches (AC-1): a
+    `None` registry (flag off) or an empty one (no/empty
+    flow_registry.yaml) both mean the tool is never added, never "added
+    with an empty enum".
     """
+    tools: list[dict[str, Any]]
     if state == SessionState.CONTENT_INTRO:
-        return [GET_NEXT_CONTENT_TOOL]
-    if state == SessionState.DOUBT_CLEARING:
-        return [GET_QUIZ_QUESTION_DETAILS_TOOL]
-    if state in (SessionState.ACTIVITY_IN_PROGRESS, SessionState.REDIRECT):
-        return [SAVE_SUBMISSION_TOOL]
-    return []
+        tools = [GET_NEXT_CONTENT_TOOL]
+    elif state == SessionState.DOUBT_CLEARING:
+        tools = [GET_QUIZ_QUESTION_DETAILS_TOOL]
+    elif state in (SessionState.ACTIVITY_IN_PROGRESS, SessionState.REDIRECT):
+        tools = [SAVE_SUBMISSION_TOOL]
+    else:
+        tools = []
+
+    if flow_registry is not None:
+        registry_names = flow_registry.names()
+        if registry_names:
+            tools = [*tools, start_glific_flow_tool(registry_names)]
+
+    return tools
 
 
 def _progress_state_text(session: SessionData) -> str:
@@ -182,12 +209,15 @@ def _session_authoritative_id(
 
 
 async def _execute_tool_call(
-    call: ToolCall, session: SessionData, lms_client: Any
+    call: ToolCall,
+    session: SessionData,
+    lms_client: Any,
+    flow_registry: FlowRegistry | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
-    """Executes exactly one of the 3 bound LMS tools. Returns (name, result_summary).
-    `result_summary` is stashed back on session state where relevant (e.g.
-    content_reference) so the reply reflects the tool's REAL return value
-    (L-005).
+    """Executes exactly one of the bound tools (3 LMS tools + CR-014's
+    `start_glific_flow`). Returns (name, result_summary). `result_summary`
+    is stashed back on session state where relevant (e.g. content_reference)
+    so the reply reflects the tool's REAL return value (L-005).
     """
     if call.name == "get_next_content":
         # Same identifier-authority rule as save_submission below: the
@@ -255,6 +285,28 @@ async def _execute_tool_call(
         )
         return call.name, {"success": result.success, "status": result.status}
 
+    if call.name == "start_glific_flow":
+        # CR-014/ADR-015: identifier authority extended to a new identifier
+        # type (Glific flow NAME, not an LMS record id) — L-014's discipline
+        # applies unchanged. The model's `flow_name` argument is looked up
+        # against the loaded registry; a miss is REFUSED here, never
+        # forwarded — there is no legitimate model-invented flow name, same
+        # as get_quiz_question_details' question_id refusal above. NO
+        # Glific client call happens in this module (isolation invariant,
+        # AC-2) — a hit only stashes the registry key for the caller
+        # (app.worker.turn_processor.process_turn) to dispatch.
+        flow_name = str(call.arguments.get("flow_name", ""))
+        entry = flow_registry.resolve(flow_name) if flow_registry is not None else None
+        if entry is None:
+            logger.warning(
+                "start_glific_flow: flow_name=%r not found in the loaded flow "
+                "registry; refusing (model-supplied flow names are never "
+                "forwarded to Glific)",
+                flow_name,
+            )
+            return call.name, None
+        return call.name, {"pending_flow_start": entry.name}
+
     raise ValueError(f"Unbound tool call: {call.name}")
 
 
@@ -289,10 +341,17 @@ async def run_turn(
     model_router: ModelRouterLike,
     lms_client: Any,
     is_off_turn: bool = False,
+    flow_registry: FlowRegistry | None = None,
 ) -> TurnOutcome:
     """Orchestrates exactly one conversational turn. Caller (the worker) is
     responsible for: resolving user_input from text or ASR, and delivering
     reply_text via the Glific client.
+
+    `flow_registry` (CR-014/ADR-015): the caller passes the loaded registry
+    ONLY when `Settings.flow_orchestrator_enabled` is True — `None` here
+    means the `start_glific_flow` tool is never offered this turn,
+    regardless of what the registry file contains (kill switch #1). See
+    `_tools_for_state` for kill switch #2 (an empty registry).
     """
     locale = resolve_locale(session.identity.tap_language)
 
@@ -408,7 +467,7 @@ async def run_turn(
     )
 
     conversation: list[dict[str, str]] = [{"role": "user", "content": user_input}]
-    tools = _tools_for_state(session.state)
+    tools = _tools_for_state(session.state, flow_registry)
 
     # ModelRouter's shared generate() interface takes only (route_name,
     # messages, tools) — no separate system-prompt argument (ADR-011) — so
@@ -416,11 +475,26 @@ async def run_turn(
     # every provider adapter.
     messages_with_system = [{"role": "system", "content": system_prompt}, *conversation]
     result = await model_router.generate(TAP_BUDDY_TURN_ROUTE, messages_with_system, tools)
+
+    # CR-014/ADR-015: set once a `start_glific_flow` call resolves against
+    # the registry; the caller (turn_processor.process_turn) dispatches the
+    # ACTUAL Glific call — this module only stashes the decision (AC-2).
+    pending_flow_start: str | None = None
+    # An unregistered flow_name the model tried this turn — drives exactly
+    # one corrective followup round below (AC-3), mirroring the guardrail
+    # "regenerate once" shape.
+    invalid_flow_name_requested: str | None = None
+
     for call in result.tool_calls:
         try:
-            name, tool_summary = await _execute_tool_call(call, session, lms_client)
+            name, tool_summary = await _execute_tool_call(call, session, lms_client, flow_registry)
             tool_names.append(name)
             tool_summaries.append(f"{name} -> {tool_summary}")
+            if name == "start_glific_flow":
+                if tool_summary and tool_summary.get("pending_flow_start"):
+                    pending_flow_start = str(tool_summary["pending_flow_start"])
+                else:
+                    invalid_flow_name_requested = str(call.arguments.get("flow_name", ""))
             if _tool_call_succeeded(name, tool_summary):
                 advance_eligible.append(name)
         except LmsApiError as exc:
@@ -431,6 +505,48 @@ async def run_turn(
             return TurnOutcome(
                 reply_text=fallback_reply, session=session, tool_calls_made=tool_names
             )
+
+    if invalid_flow_name_requested is not None and pending_flow_start is None:
+        # AC-3: exactly ONE corrective followup round — tell the model which
+        # names are valid and let it either retry with a valid name or just
+        # answer normally. A SECOND invalid attempt in this round is not
+        # retried again; its (empty-of-a-valid-flow) text becomes the reply
+        # via the normal fallback plumbing below.
+        registry_names = flow_registry.names() if flow_registry is not None else []
+        logger.warning(
+            "start_glific_flow: model requested unregistered flow_name=%r "
+            "(valid names: %s); refusing and running one corrective followup round",
+            invalid_flow_name_requested,
+            registry_names,
+        )
+        corrective = await model_router.generate(
+            TAP_BUDDY_TURN_ROUTE,
+            messages_with_system
+            + [
+                {
+                    "role": "user",
+                    "content": (
+                        f"[system note] '{invalid_flow_name_requested}' is not a "
+                        "registered flow. Valid flow_name values: "
+                        f"{', '.join(registry_names)}. Call start_glific_flow again "
+                        "with one of those exact names if appropriate, or just reply "
+                        "normally if none fit."
+                    ),
+                }
+            ],
+            tools,
+        )
+        for call in corrective.tool_calls:
+            if call.name != "start_glific_flow":
+                continue
+            name, tool_summary = await _execute_tool_call(call, session, lms_client, flow_registry)
+            tool_names.append(name)
+            tool_summaries.append(f"{name} -> {tool_summary}")
+            if tool_summary and tool_summary.get("pending_flow_start"):
+                pending_flow_start = str(tool_summary["pending_flow_start"])
+            # A second miss here is deliberately NOT retried again (AC-3's
+            # "exactly one" round) — falls through to a plain reply below.
+        result = corrective
 
     reply_text = result.text.strip()
     if tool_names and not reply_text:
@@ -510,6 +626,7 @@ async def run_turn(
         session=session,
         tool_calls_made=tool_names,
         advanced_to=advanced_to,
+        pending_flow_start=pending_flow_start,
     )
 
 

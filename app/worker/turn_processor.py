@@ -51,6 +51,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.config.flow_registry import FlowRegistry
 from app.config.scripted_replies import (
     get_language_choice_keywords,
     get_mode_choice_keywords,
@@ -98,6 +99,11 @@ class _GlificSender(Protocol):
         caption: str | None = None,
         sender_id: str | None = None,
     ) -> object: ...
+    # CR-014/ADR-015 AC-4: the same client instance dispatches the
+    # agent-orchestrated flow start, mirroring the existing
+    # `open_ticket_for_escalation` shape (this Protocol already carries
+    # `create_ticket`).
+    async def start_contact_flow(self, flow_id: str, contact_id: str) -> object: ...
 
 
 class _FlowStarter(Protocol):
@@ -121,6 +127,13 @@ class TurnProcessingResult:
     escalation_reason: EscalationReason | None = None
     session: SessionData | None = None
     reply_sent: bool = False
+    # CR-014/ADR-015: the registry NAME key when this turn resolved
+    # `start_glific_flow`, threaded from `TurnOutcome.pending_flow_start`.
+    # Read by `maybe_rearm_turn_flow` (suppresses the flow-80 re-arm for
+    # this turn — re-arming would hard-kill the just-started flow) and set
+    # by `process_turn` after it has already dispatched the actual
+    # `start_contact_flow` call for it.
+    pending_flow_start: str | None = None
 
 
 async def _deliver_reply(
@@ -169,6 +182,54 @@ async def _deliver_reply(
     await glific_client.send_text(contact_id, reply_text)
 
 
+async def _dispatch_pending_flow_start(
+    contact_id: str,
+    flow_name: str,
+    *,
+    flow_registry: FlowRegistry | None,
+    glific_client: _GlificSender,
+) -> None:
+    """CR-014/ADR-015 AC-4: the ACTUAL Glific dispatch for a turn whose
+    `run_turn` call resolved `start_glific_flow` — `turn_logic.py` only
+    validated `flow_name` and stashed the decision (isolation invariant,
+    AC-2); this is the one call site that actually talks to Glific for it,
+    mirroring the existing `outcome.escalated -> open_ticket_for_escalation`
+    dispatch pattern below. Called AFTER `_deliver_reply` (deliberate
+    sequencing, CR-014 point 3): `createAndSendMessage` is not gated on
+    flow-context state, so the turn's own reply is not at risk of being
+    swallowed by the imminent flow-context kill — only the NEXT flow-80
+    re-arm is (see `maybe_rearm_turn_flow`'s suppression guard below).
+
+    Never raises (same discipline as `maybe_rearm_turn_flow`/
+    `reset_test_student`): a dispatch failure (stale registry `flow_id`,
+    Glific error, network failure) is logged and does not crash the worker
+    or retry the whole turn — a retry would re-run `run_turn`'s LLM call and
+    side effects a second time.
+    """
+    entry = flow_registry.resolve(flow_name) if flow_registry is not None else None
+    if entry is None:
+        # Should not happen structurally (turn_logic.py only ever sets
+        # pending_flow_start from a hit against THIS SAME flow_registry) —
+        # logged loudly instead of silently dropped, in case of a
+        # registry-reload race between the two call sites.
+        logger.warning(
+            "pending_flow_start=%r not found in the flow registry at dispatch "
+            "time for contact=%s; not calling Glific",
+            flow_name,
+            contact_id,
+        )
+        return
+    try:
+        await glific_client.start_contact_flow(entry.flow_id, contact_id)
+    except Exception:
+        logger.exception(
+            "start_glific_flow dispatch failed for contact=%s flow_name=%r flow_id=%s",
+            contact_id,
+            flow_name,
+            entry.flow_id,
+        )
+
+
 async def process_turn(
     payload: GlificWebhookPayload,
     *,
@@ -178,6 +239,7 @@ async def process_turn(
     glific_client: _GlificSender,
     speech_client: Any | None = None,
     settings: Settings | None = None,
+    flow_registry: FlowRegistry | None = None,
 ) -> TurnProcessingResult:
     """Processes exactly one enqueued turn. Ported decision tree from
     tap-buddy's `_process_turn` (identity resolution -> greeting/readiness
@@ -194,6 +256,14 @@ async def process_turn(
     — every call site below degrades gracefully in that case (audio turns
     fall through with an empty transcript; voice-mode replies fall back to
     text), never crashing the worker.
+
+    `flow_registry` (CR-014/ADR-015): threaded straight through to
+    `run_turn` — the worker entrypoint
+    (`app/worker/main.py::build_process_turn_fn`) passes the loaded registry
+    ONLY when `Settings.flow_orchestrator_enabled` is True, `None`
+    otherwise (kill switch #1); an empty/absent `flow_registry.yaml`
+    resolves to a registry that offers no names either way (kill switch
+    #2). `None` here means `start_glific_flow` is never offered this turn.
     """
     user_text = payload.text or ""
 
@@ -602,7 +672,11 @@ async def process_turn(
             return TurnProcessingResult(handled=True, session=session, reply_sent=True)
 
     outcome = await run_turn(
-        session=session, user_input=user_text, model_router=model_router, lms_client=lms_client
+        session=session,
+        user_input=user_text,
+        model_router=model_router,
+        lms_client=lms_client,
+        flow_registry=flow_registry,
     )
     await session_store.save_session(outcome.session)
 
@@ -623,12 +697,23 @@ async def process_turn(
         # dropped ad-hoc review dashboard.
         await open_ticket_for_escalation(payload.contact_id, outcome.session, glific_client)
 
+    if outcome.pending_flow_start is not None:
+        # CR-014/ADR-015 AC-4: dispatched AFTER the reply above (never
+        # raises — see _dispatch_pending_flow_start's docstring).
+        await _dispatch_pending_flow_start(
+            payload.contact_id,
+            outcome.pending_flow_start,
+            flow_registry=flow_registry,
+            glific_client=glific_client,
+        )
+
     return TurnProcessingResult(
         handled=True,
         escalated=outcome.escalated,
         escalation_reason=outcome.session.escalation_reason,
         session=outcome.session,
         reply_sent=True,
+        pending_flow_start=outcome.pending_flow_start,
     )
 
 
@@ -657,8 +742,19 @@ async def maybe_rearm_turn_flow(
     Never raises: the turn itself already succeeded (reply sent); a re-arm
     failure must not push the already-processed entry into retry/DLQ. It is
     logged and returns False.
+
+    CR-014/ADR-015 (the critical re-arm-suppression fix): a turn that
+    started an external flow via `start_glific_flow` (`result.pending_flow_start`
+    set) must NOT re-arm flow 80 — starting a flow HARD-KILLS the contact's
+    active flow context (live-verified 2026-07-04), so re-arming one call
+    later would hard-kill the just-started flow before the contact ever
+    interacts with it. This check takes precedence the same way the
+    CLOSE/ESCALATED guard does, checked FIRST because a flow-start can
+    happen on a non-terminal session state.
     """
     if not turn_flow_id:
+        return False
+    if result.pending_flow_start is not None:
         return False
     session = result.session
     if session is not None and session.state in (SessionState.CLOSE, SessionState.ESCALATED):

@@ -40,6 +40,8 @@ from typing import Any
 
 from redis.asyncio import Redis
 
+from app.config.deploy_gates import resolve_flow_orchestrator_production_gate
+from app.config.flow_registry import FlowRegistry, load_flow_registry
 from app.config.settings import Settings, get_settings
 from app.delivery.glific_client import GlificClient
 from app.ingress.glific_payload import GlificWebhookPayload
@@ -98,6 +100,7 @@ def build_process_turn_fn(
     turn_flow_id: str,
     speech_client: Any | None = None,
     settings: Settings | None = None,
+    flow_registry: FlowRegistry | None = None,
 ) -> Callable[[GlificWebhookPayload], Awaitable[TurnProcessingResult]]:
     """Composes the worker's per-entry turn function: process the turn, then
     re-arm the turn-relay flow (`maybe_rearm_turn_flow`) so the contact's
@@ -112,6 +115,11 @@ def build_process_turn_fn(
     instance used for both inbound transcription and outbound TTS, built
     once here (`_build_speech_client`, not per-call) and generic rather
     than transcription-specific, since Task 4's TTS reply reuses it too.
+
+    `flow_registry` (CR-014/ADR-015): the caller (`run_worker_loop`) passes
+    the loaded registry ONLY when `Settings.flow_orchestrator_enabled` is
+    True, `None` otherwise (kill switch #1) — threaded straight through to
+    `process_turn`, which threads it to `run_turn`.
     """
 
     async def process_turn_fn(payload: GlificWebhookPayload) -> TurnProcessingResult:
@@ -136,6 +144,7 @@ def build_process_turn_fn(
                 glific_client=glific_client,
                 speech_client=speech_client,
                 settings=settings,
+                flow_registry=flow_registry,
             )
             return result
         finally:
@@ -170,6 +179,34 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
     deployment shape).
     """
     settings = get_settings()
+
+    # CR-014/ADR-015 BC-4: production hard-refuse, checked here in ADDITION
+    # to app/main.py's lifespan (unlike the pre-existing GL-005-a/b gates,
+    # which are only wired at the FastAPI-app boot path today) — this
+    # worker process is where flow_orchestrator_enabled actually takes
+    # effect (`run_turn`/`process_turn` only ever run here), and it can be
+    # deployed/scaled independently of the ingress app, so it must refuse
+    # to boot on its own.
+    resolve_flow_orchestrator_production_gate(settings)
+
+    # CR-014/ADR-015: the registry is loaded + BOOT-VALIDATED (BC-3's
+    # structural no-loopback reject, raised inside `load_flow_registry`)
+    # UNCONDITIONALLY, independent of the flag — a broken registry file
+    # must fail loudly at boot even while the capability itself is
+    # flag-disabled, so it is never silently latent until someone flips the
+    # flag on. It is only ever PASSED to `build_process_turn_fn` (and
+    # therefore only ever offered to the model) when the flag is explicitly
+    # True (kill switch #1); an empty/absent `flow_registry.yaml` is kill
+    # switch #2 (already handled inside `FlowRegistry`/`_tools_for_state`).
+    flow_registry = load_flow_registry(turn_flow_id=settings.glific_turn_flow_id)
+    active_flow_registry = flow_registry if settings.flow_orchestrator_enabled else None
+    logger.info(
+        "flow orchestrator: enabled=%s registry_entries=%d active=%s",
+        settings.flow_orchestrator_enabled,
+        len(flow_registry.names()),
+        active_flow_registry is not None,
+    )
+
     redis = _build_redis_client(settings)
     session_store = RedisSessionStore(redis, settings)
     lms_client = TapLmsClient(
@@ -197,6 +234,7 @@ async def run_worker_loop(*, max_iterations: int | None = None) -> None:
         turn_flow_id=settings.glific_turn_flow_id,
         speech_client=speech_client,
         settings=settings,
+        flow_registry=active_flow_registry,
     )
 
     logger.info(

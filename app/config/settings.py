@@ -204,6 +204,21 @@ class Settings(BaseSettings):
     # silently widen who may reach the webhook.
     glific_contact_allowlist: str = ""
 
+    # --- Conv-AI flow orchestrator (CR-014 / ADR-015, INTERNAL-TESTING-ONLY)
+    # ---
+    # Kill switch #1 of 2 (the other is an empty/absent
+    # app/config/flow_registry.yaml, see app/config/flow_registry.py). No
+    # baked-True default anywhere (same explicit-affirmative-opt-in
+    # discipline as `environment`) -- an unconfigured deployment behaves
+    # exactly as it did before this capability existed: `start_glific_flow`
+    # is never offered to the model, `TurnOutcome.pending_flow_start` is
+    # structurally always None, `maybe_rearm_turn_flow` is unaffected.
+    # ADR-015 BC-4: production deploys additionally hard-refuse to boot with
+    # this set True (`app.config.deploy_gates.resolve_flow_orchestrator_production_gate`)
+    # -- this capability is explicitly not for public release (Nithun,
+    # 2026-07-29) until BC-1..BC-5 are independently met.
+    flow_orchestrator_enabled: bool = False
+
 
 def get_settings() -> Settings:
     """Return a fresh Settings instance (env re-read each call).

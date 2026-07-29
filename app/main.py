@@ -17,7 +17,11 @@ import redis.asyncio as redis_asyncio
 from fastapi import FastAPI
 from redis.asyncio import Redis
 
-from app.config.deploy_gates import resolve_langfuse_host_gate, resolve_lms_write_target_gate
+from app.config.deploy_gates import (
+    resolve_flow_orchestrator_production_gate,
+    resolve_langfuse_host_gate,
+    resolve_lms_write_target_gate,
+)
 from app.config.settings import Settings, get_settings
 from app.delivery.glific_client import GlificClient
 from app.ingress.contact_allowlist import resolve_contact_allowlist
@@ -99,6 +103,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # CR-010's `!= "local"` shape.
     resolve_langfuse_host_gate(settings)
     resolve_lms_write_target_gate(settings)
+
+    # CR-014 / ADR-015 BC-4 (2026-07-29): the conv-AI flow-orchestrator's
+    # production hard-refuse — same ordering position and production-only
+    # trigger shape as the two GL-005 gates immediately above.
+    resolve_flow_orchestrator_production_gate(settings)
 
     app.state.redis = _build_redis_client(settings)
     app.state.lms_client = _build_lms_client(settings)

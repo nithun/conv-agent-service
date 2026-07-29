@@ -95,6 +95,28 @@ async def test_real_app_fails_to_boot_in_production_with_non_evalix_frappe_url(
 
 
 @pytest.mark.asyncio
+async def test_real_app_fails_to_boot_in_production_with_flow_orchestrator_enabled(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    """CR-014/ADR-015 BC-4 reject case at the real-lifespan level: a
+    production boot with `flow_orchestrator_enabled=True` must raise
+    `RuntimeError` before `yield` — before any client is constructed. The
+    other two GL-005 gates are left passing so the failure is unambiguously
+    attributable to the flow-orchestrator gate.
+    """
+    settings = _production_settings(flow_orchestrator_enabled=True)
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+
+    probe_app = FastAPI()
+
+    with pytest.raises(RuntimeError, match="flow_orchestrator_enabled"):
+        async with main_module.lifespan(probe_app):
+            pytest.fail("lifespan must raise before yielding control")
+
+    assert not hasattr(probe_app.state, "redis")
+
+
+@pytest.mark.asyncio
 async def test_real_app_boots_clean_in_production_with_self_hosted_langfuse_and_evalix_lms(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
