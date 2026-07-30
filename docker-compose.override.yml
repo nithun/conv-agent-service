@@ -26,7 +26,12 @@
 services:
   redis:
     ports:
-      - "127.0.0.1:6379:6379"
+      # Host port 6380 (not 6379): this dev machine co-hosts the local Glific,
+      # whose brew redis-server owns 127.0.0.1:6379 — publishing 6379 here made
+      # `docker compose up` fail and crash-looped the worker twice (F-083).
+      # Container-internal port stays 6379 (REDIS_URL=redis://redis:6379 unchanged);
+      # host-side debugging uses `redis-cli -p 6380`.
+      - "127.0.0.1:6380:6379"
 
   langfuse:
     ports:

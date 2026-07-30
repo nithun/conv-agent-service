@@ -50,7 +50,9 @@ OVERRIDE_PATH = REPO_ROOT / "docker-compose.override.yml"
 # service -> (host_port, container_port) expected in the loopback-only
 # override binding.
 SENSITIVE_SERVICES: dict[str, tuple[str, str]] = {
-    "redis": ("6379", "6379"),
+    # Host 6380 (not 6379): the co-located Glific dev stack's brew redis owns
+    # host 6379 (F-083); container port stays 6379 for the compose network.
+    "redis": ("6380", "6379"),
     "langfuse": ("3001", "3000"),
     "litellm": ("4001", "4000"),
 }
