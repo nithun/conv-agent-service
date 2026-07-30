@@ -8,36 +8,34 @@
 #
 # KEYING: entries are keyed by stable NAME (top-level YAML key), never the
 # mutable `flow_id`. `flow_id` is the CURRENT resolved numeric id -- MUST be
-# re-synced in the SAME session a flow is re-imported/republished
-# (glific-platform hands over an updated id, or Nithun edits this file
-# directly) -- the exact manual-refresh discipline GLIFIC_TURN_FLOW_ID
-# already requires (the 26->80 staleness class), just registry-file-scoped.
+# re-synced in the SAME session a flow is re-imported/republished (the
+# 26->80 staleness class). The per-entry `uuid` comment is a stable ANCHOR
+# for that re-sync only (AD-006 review C-2: dispatch uses the boot-frozen
+# flow_id; the uuid is never resolved at runtime).
 #
 # BC-3 (structural no-loopback guard, app/config/flow_registry.py): no entry
 # here may carry a `flow_id` equal to GLIFIC_TURN_FLOW_ID -- the loader
 # rejects at boot if one does.
 #
-# SOURCE OF THESE TWO ENTRIES: glific-platform's
-# HANDOVER-tap-agent-convai-flow-orchestrator-2026-07-29.md starter catalog,
-# as cited verbatim in CR-014 Proposed behavior point 2 (Nithun-authored
-# `when_to_use` text, not placeholder -- CR-014 AC-8's floor for these two).
-# The `flow_id` values below are LIVE-VERIFIED (2026-07-29, feature-builder,
-# `flows` GraphQL query against local dev Glific): "TAP Buddy" = 25,
-# "Registration Workflow" = 6, both `isActive: true` -- matches this file
-# exactly. See AD-002's external-contracts table for the full live-check
-# citation (dispatch + re-arm suppression also live-verified against these
-# ids this session).
+# REGISTRY v1 (AD-006 approved + its §7 decisions, 2026-07-30): exactly ONE
+# entry -- TAP Feedback. The 2026-07-29 placeholders (TAP Buddy 25,
+# Registration Workflow 6) were REMOVED per AD-006 §2/§7: buddy is the
+# legacy bot this agent supersedes (ADR-010), registration is agent-owned
+# (J2 auto-provision), and Optout was withdrawn (the deterministic `stop`
+# keyword remains the opt-out path -- AD-006 review C-4).
+#
+# SOURCE: glific-platform HANDOVER-tap-agent-tapfeedback-spec-done-2026-07-30
+# -- built to the buttons-only spec (no free-text leg; mismatch = re-ask
+# once then END; terminal exit; EN+HI localization; Glific-internal
+# storage; keyword-less; published). BC-1 return-to-agent live-verified
+# with this very flow (HANDOVER-tap-agent-bc1-evidence-2026-07-30: all 5
+# protocol steps PASS, flow_context rows cited).
 
-"TAP Buddy":
-  flow_id: "25"
+"TAP Feedback":
+  # uuid anchor: 02cbcbec-45e2-4939-8b76-29b266de2b9c (stable across
+  # re-imports; numeric id history on local org 1: 88 -> 92 -> 93 -> 94)
+  flow_id: "94"
   when_to_use: >
-    The contact wants the voice-first TAP Buddy experience, or explicitly
-    asks to "talk to buddy"/"use voice". Always hand off via this flow --
-    do not try to conduct a voice session yourself.
-
-"Registration Workflow":
-  flow_id: "6"
-  when_to_use: >
-    A contact who is NOT a recognized student wants to register for TAP
-    LMS. Only start this for a contact whose identity resolution has
-    already failed/is not a student in this session.
+    The learning session just closed (the student finished/saved today's
+    activity) and no feedback has been collected this session. Start this
+    to ask two quick button questions. Never start it mid-activity.

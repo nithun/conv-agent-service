@@ -111,13 +111,16 @@ def test_no_collision_when_ids_simply_differ(tmp_path: Path) -> None:
 
 
 def test_the_real_shipped_flow_registry_yaml_loads_and_passes_bc3() -> None:
-    """The actual `app/config/flow_registry.yaml` this CR ships (CR-014
-    AC-8's starter catalog: TAP Buddy + Registration Workflow) loads
-    cleanly and does not collide with the live `.env` turn-relay id (80).
+    """The actual `app/config/flow_registry.yaml` shipped is registry v1
+    (AD-006 §2/§7, 2026-07-30): exactly one entry, TAP Feedback (flow 94,
+    BC-1-verified). The 2026-07-29 placeholders (TAP Buddy 25, Registration
+    Workflow 6) were removed per AD-006 — their reappearance here would be
+    a regression against that decision, not an addition.
     """
     registry = load_flow_registry(turn_flow_id="80")
 
-    assert "TAP Buddy" in registry.names()
-    assert "Registration Workflow" in registry.names()
-    for entry in registry.entries.values():
-        assert entry.when_to_use  # AC-8: real authored text, never blank
+    assert set(registry.names()) == {"TAP Feedback"}
+    entry = registry.resolve("TAP Feedback")
+    assert entry is not None and entry.flow_id == "94"
+    for e in registry.entries.values():
+        assert e.when_to_use  # AC-8: real authored text, never blank
