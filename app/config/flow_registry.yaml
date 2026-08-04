@@ -33,8 +33,14 @@
 
 "TAP Feedback":
   # uuid anchor: 02cbcbec-45e2-4939-8b76-29b266de2b9c (stable across
-  # re-imports; numeric id history on local org 1: 88 -> 92 -> 93 -> 94)
-  flow_id: "94"
+  # re-imports; numeric id history on local org 1: 88 -> 92 -> 93 -> 94 -> 95)
+  # 94 -> 95 re-synced 2026-08-04 after glific-platform's post-flow-distress
+  # fix re-imported the flow (their commit 1321f2b; three terminal exits now
+  # enter_flow -> flow 80). Re-resolved from the uuid anchor against live
+  # glific_dev, NOT from the handover's stated number: id 95, is_active=t,
+  # updated_at 2026-08-03 18:32. Old id 94 no longer exists in `flows` at
+  # all, so the stale pin would have dispatched a dead id (F-098).
+  flow_id: "95"
   when_to_use: >
     The learning session just closed (the student finished/saved today's
     activity) and no feedback has been collected this session. Start this
