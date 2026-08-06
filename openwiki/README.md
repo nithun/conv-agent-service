@@ -69,6 +69,7 @@ network side effect happens in the worker. See [design-principles](design-princi
 | [configuration](configuration.md) | Settings, boot-time fail-closed deploy gates, flow registry, env vars |
 | [external-contracts](external-contracts.md) | Consolidated Glific + Frappe contracts |
 | [testing](testing.md) | Test layout, notable regression guards, how to run |
+| [monitoring](monitoring.md) | Liveness: worker heartbeat + readiness (built) and the external Grafana/Prometheus dead-man's-switch (endpoint live; pusher owed) |
 | [design-principles](design-principles.md) | The invariants that make the system safe |
 
 ## Start here
