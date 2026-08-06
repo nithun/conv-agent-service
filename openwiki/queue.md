@@ -1,9 +1,7 @@
 ---
-title: Queue (Redis Streams)
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/queue/
+type: "Reference"
+title: "Queue — `app/queue/`"
+openwiki_generated: true
 ---
 
 # Queue — `app/queue/`

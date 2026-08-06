@@ -1,9 +1,7 @@
 ---
-title: Testing
-okf_version: "0.1"
-kind: reference
-updated: 2026-08-07
-source: tests/
+type: "Reference"
+title: "Testing — `tests/`"
+openwiki_generated: true
 ---
 
 # Testing — `tests/`

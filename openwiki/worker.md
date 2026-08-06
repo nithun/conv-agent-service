@@ -1,9 +1,7 @@
 ---
-title: Worker (all real side effects)
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/worker/
+type: "Reference"
+title: "Worker — `app/worker/`"
+openwiki_generated: true
 ---
 
 # Worker — `app/worker/`

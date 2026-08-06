@@ -1,9 +1,7 @@
 ---
-title: Delivery (Glific GraphQL client)
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/delivery/
+type: "Reference"
+title: "Delivery — `app/delivery/`"
+openwiki_generated: true
 ---
 
 # Delivery — `app/delivery/`

@@ -1,9 +1,7 @@
 ---
-title: Configuration & boot gates
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/config/
+type: "Reference"
+title: "Configuration — `app/config/`"
+openwiki_generated: true
 ---
 
 # Configuration — `app/config/`
@@ -35,6 +33,12 @@ Env values are compared case- and whitespace-normalized.
 BC-3 no-loopback guard rejects any entry whose `flow_id == GLIFIC_TURN_FLOW_ID`
 (`:98`–`:109`). An empty/absent file yields an empty registry — a deliberate kill
 switch.
+
+## Language and Reply Configuration
+
+- **`distress_keywords.yaml` / `distress_keywords.py`**: Per-language regex patterns for the pre-LLM distress check. Falls back to a combined English+Hindi list if a language is missing.
+- **`language_map.yaml` / `language_map.py`**: Maps the LMS `tap_language` to Google STT/TTS locales and voices. Resolves unsupported languages to a primary fallback (English).
+- **`scripted_replies.yaml` / `scripted_replies.py`**: Scripted (non-LLM) replies and keywords for things like greetings, mode choice, and error handling, all keyed by `tap_language`. Falls back to English only, as concatenating languages for a reply would be nonsensical.
 
 ## Environment variables (names only — never commit values)
 Runtime: `ENVIRONMENT`, `GLIFIC_API_URL`, `FRAPPE_API_URL`, `REDIS_URL`,

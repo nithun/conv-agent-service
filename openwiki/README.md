@@ -1,9 +1,7 @@
 ---
-title: tap-agent-service — Wiki Home
-okf_version: "0.1"
-kind: overview
-updated: 2026-08-07
-generator: authored by Claude Code (starter wiki; regenerable via `openwiki --update`)
+type: "Reference"
+title: "tap-agent-service"
+openwiki_generated: true
 ---
 
 # tap-agent-service
@@ -38,9 +36,9 @@ failure is documented at `app/main.py:46` and `app/worker/main.py:161`).
 ```mermaid
 flowchart TD
   A[POST /webhook/glific] -->|verify HMAC| B[parse payload]
-  B --> C{duplicate?<br/>SETNX}
+  B --> C{duplicate? SETNX}
   C -->|yes| Z[200 ack, drop]
-  C -->|no| D{distress?<br/>text check}
+  C -->|no| D{distress? text check}
   D -->|yes| E[XADD escalation stream] --> Z
   D -->|no| F[XADD per-contact stream] --> Z
   F -.async.-> W[worker drains stream]

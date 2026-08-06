@@ -1,8 +1,7 @@
 ---
-title: Design principles & invariants
-okf_version: "0.1"
-kind: reference
-updated: 2026-08-07
+type: "Reference"
+title: "Design principles & invariants"
+openwiki_generated: true
 ---
 
 # Design principles & invariants

@@ -1,8 +1,7 @@
 ---
-title: External contracts (Glific + Frappe)
-okf_version: "0.1"
-kind: reference
-updated: 2026-08-07
+type: "Reference"
+title: "External contracts"
+openwiki_generated: true
 ---
 
 # External contracts
@@ -48,7 +47,7 @@ absent from the returned types.
 ## LLM egress
 Via the self-hosted **LiteLLM gateway → Vertex AI `gemini-2.5-flash`** (project
 `tap-buddy-mvp`); every call traced in **self-hosted Langfuse**. The `OPENROUTER_*`
-names are legacy — see the [llm caveat](llm.md#-naming-caveat-read-this-first).
+names are legacy — see the naming caveat at the top of [llm](llm.md).
 
 ## Redis
 Streams (per-contact + escalation), dedupe/idempotency keys, session hashes, and the

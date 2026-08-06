@@ -12,5 +12,3 @@ Caddyfile
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-# The generated wiki itself (don't let OpenWiki document its own output):
-openwiki/

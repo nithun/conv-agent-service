@@ -1,9 +1,7 @@
 ---
-title: Guardrails
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/guardrails/
+type: "Reference"
+title: "Guardrails — `app/guardrails/`"
+openwiki_generated: true
 ---
 
 # Guardrails — `app/guardrails/`

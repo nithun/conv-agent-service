@@ -1,9 +1,7 @@
 ---
-title: Ingress (the fast-ack layer)
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/ingress/
+type: "Reference"
+title: "Ingress — `app/ingress/`"
+openwiki_generated: true
 ---
 
 # Ingress — `app/ingress/`
@@ -51,7 +49,7 @@ route dependency was **removed** per CR-011 (`glific_webhook.py:40`). The boot-t
 - `GET /health` (`app/ingress/health.py:15`) — dependency-free liveness; 200 whenever
   the process is up.
 - `GET /health/ready` (`app/ingress/readiness.py:32`) — 200 only if Redis pings **and**
-  the [worker heartbeat](worker.md#heartbeat) is fresh, else **503**. This is the real
+  the [worker heartbeat](worker.md#heartbeat-heartbeatpy-healthcheckpy) is fresh, else **503**. This is the real
   "is the worker alive" signal.
 
 ## Media

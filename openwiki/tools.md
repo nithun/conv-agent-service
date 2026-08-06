@@ -1,9 +1,7 @@
 ---
-title: Tools (TAP LMS / Frappe client + schemas)
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/tools/
+type: "Reference"
+title: "Tools — `app/tools/`"
+openwiki_generated: true
 ---
 
 # Tools — `app/tools/`

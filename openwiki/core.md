@@ -1,9 +1,7 @@
 ---
-title: Core (conversation logic)
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/core/
+type: "Reference"
+title: "Core — `app/core/`"
+openwiki_generated: true
 ---
 
 # Core — `app/core/`

@@ -1,9 +1,7 @@
 ---
-title: LLM (router, routes, provider, tracing)
-okf_version: "0.1"
-kind: module
-updated: 2026-08-07
-source: app/llm/
+type: "Reference"
+title: "LLM — `app/llm/`"
+openwiki_generated: true
 ---
 
 # LLM — `app/llm/`
