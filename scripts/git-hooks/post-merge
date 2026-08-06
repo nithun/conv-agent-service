@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Portable git post-merge hook: nudge (or auto-run) an OpenWiki refresh after
+# code lands via `git pull` / merge. DISABLED BY DEFAULT — it only reminds.
+#
+# Enable auto-refresh (opt-in, per machine):  export OPENWIKI_AUTO=1
+# Install the hook (per clone):                git config core.hooksPath scripts/git-hooks
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Only care when tracked code actually changed in this merge.
+if git diff-tree -r --name-only ORIG_HEAD HEAD 2>/dev/null | grep -qE '^(app/|scripts/|docs/)'; then
+  if [ "${OPENWIKI_AUTO:-0}" = "1" ] && command -v openwiki >/dev/null 2>&1; then
+    echo "[openwiki] code changed — refreshing wiki (OPENWIKI_AUTO=1) ..."
+    "$REPO_ROOT/scripts/openwiki-refresh.sh" || true
+  else
+    echo "[openwiki] code changed. Run  scripts/openwiki-refresh.sh  to update the wiki"
+    echo "[openwiki] (set OPENWIKI_AUTO=1 to do this automatically)"
+  fi
+fi

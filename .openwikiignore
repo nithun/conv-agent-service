@@ -1,0 +1,16 @@
+# OpenWiki read boundary (gitignore-style). Ignored paths are NEVER read,
+# scanned, or reproduced in the generated wiki. Keep secrets + runtime data here.
+.env
+.env.*
+!.env.example
+data/                    # runtime media
+litellm.config.yaml      # model routing / internal endpoints
+docker-compose.vm.yml    # VM topology / hostnames
+Caddyfile
+**/__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# The generated wiki itself (don't let OpenWiki document its own output):
+openwiki/

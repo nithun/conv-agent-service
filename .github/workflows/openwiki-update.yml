@@ -1,0 +1,40 @@
+# OpenWiki auto-update — DISABLED BY DEFAULT (manual dispatch only).
+#
+# This is a minimal starter. The canonical template is `openwiki-update.yml`
+# from the OpenWiki repo (github.com/langchain-ai/openwiki) — prefer copying
+# theirs once you're ready. Before enabling the schedule below:
+#   1. Add repo secret ANTHROPIC_API_KEY (Settings → Secrets → Actions).
+#   2. Manually run once (Actions → this workflow → Run workflow) and REVIEW
+#      the opened PR — confirm no secrets/PII leaked into openwiki/.
+#   3. Only then uncomment the `schedule:` trigger.
+name: openwiki-update
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "0 6 * * 1"   # weekly, Mondays 06:00 UTC — enable after first manual review
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install -g openwiki
+      - name: Refresh wiki
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: openwiki --update
+      - name: Open PR with wiki changes
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "docs(openwiki): refresh generated wiki"
+          title: "docs(openwiki): refresh generated wiki"
+          branch: openwiki/auto-update
+          add-paths: openwiki/**
